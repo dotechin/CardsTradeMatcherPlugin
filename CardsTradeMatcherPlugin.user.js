@@ -11,12 +11,12 @@
 // @match           *://steamcommunity.com/profiles/*/badges
 // @match           *://steamcommunity.com/profiles/*/badges/
 // @match           *://steamcommunity.com/tradeoffer/new/*
-// @version         6.1.0.0
+// @version         6.2.0.0
 // @connect         asf.justarchi.net
 // @grant           GM.xmlHttpRequest
 // @grant           GM_addStyle
 // @grant           GM_xmlhttpRequest
-// @require         https://raw.githubusercontent.com/dotechin/CardsTradeMatcherPlugin/230cfb50bee1e44cb3342d3dec48571c3e8a7898/CardsTradeMatcherPlugin.txt
+// @require         https://raw.githubusercontent.com/dotechin/CardsTradeMatcherPlugin/abbdd927adfe001a271da6d14c34e44b2f8f0fbb/CardsTradeMatcherPlugin.txt
 // ==/UserScript==
 
 // Installable wrapper for userscript managers.

@@ -6,7 +6,7 @@ A userscript that matches Steam Trading Cards with ASF bots and Steam friends.
 
 - **Installable file:** [`CardsTradeMatcherPlugin.user.js`](CardsTradeMatcherPlugin.user.js)
 - **Source file:** [`CardsTradeMatcherPlugin.txt`](CardsTradeMatcherPlugin.txt)
-- **Version:** 6.1.0.0
+- **Version:** 6.2.0.0
 - **Authors:** Rudokhvist, iBreakEverything, dotechin
 
 ## Features
@@ -15,9 +15,22 @@ A userscript that matches Steam Trading Cards with ASF bots and Steam friends.
 - Configurable source filters (ASF bots, friends, or both)
 - Result grouping and filtering by source (ASF / Friend / Shared)
 - Scan filters to skip badges you don't need
+- Self-updating inventory cache with TTL, reuse, and manual bypass/clear controls
 - Blacklist support
 - Trade offer automation options (message, auto-send, post-trade action)
 - Debug mode
+
+## Overall Status
+
+- **Implemented and working:** unified ASF/friend target scan, badge matching, source-aware results, scan filters, blacklist handling, trade helper flow, and inventory caching
+- **Operational caveats:** the plugin still depends on current Steam and ASF page/API formats, so upstream layout or response changes can break parts of the scan flow
+- **Current scope:** trading-card matching is the supported path today
+
+## TODO
+
+- Foil badge matching
+- Profile backgrounds
+- Emoticons
 
 ## Installation
 
@@ -28,4 +41,5 @@ A userscript that matches Steam Trading Cards with ASF bots and Steam friends.
 
 ## Known Limitations
 
-- Foil badge matching is not yet supported (`TODO: match foils too`)
+- Foil badge matching is not yet supported
+- Background and emoticon matching are not yet supported
