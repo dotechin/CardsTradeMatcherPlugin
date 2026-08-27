@@ -6,7 +6,7 @@ A userscript that matches Steam Trading Cards with ASF bots and Steam friends.
 
 - **File:** [`CardsTradeMatcherPlugin.txt`](CardsTradeMatcherPlugin.txt)
 - **Version:** 6.1.0.0
-- **Authors:** Rudokhvist, iBreakEverything
+- **Authors:** Rudokhvist, iBreakEverything, dotechin
 
 ## Features
 
