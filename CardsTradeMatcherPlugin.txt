@@ -1,10 +1,11 @@
 // ==UserScript==
-// @name            ASF STM Unified
+// @name            CardsTradeMatcherPlugin
 // @namespace       https://greasyfork.org/users/738914
 // @description     ASF bot and friend trade matcher
 // @license         Apache-2.0
 // @author          Rudokhvist
 // @author          iBreakEverything
+// @author          dotechin
 // @match           *://steamcommunity.com/id/*/badges
 // @match           *://steamcommunity.com/id/*/badges/
 // @match           *://steamcommunity.com/profiles/*/badges
