@@ -4,9 +4,10 @@ A userscript that matches Steam Trading Cards with ASF bots and Steam friends.
 
 ## Script
 
-- **Installable file:** [`CardsTradeMatcherPlugin.user.js`](CardsTradeMatcherPlugin.user.js)
-- **Source file:** [`CardsTradeMatcherPlugin.txt`](CardsTradeMatcherPlugin.txt)
-- **Version:** 6.2.0.0
+- **Installable file:** [`CardsTradeMatcherPlugin.user.js`](CardsTradeMatcherPlugin.user.js) (full userscript source)
+- **Direct install URL:** [`raw/CardsTradeMatcherPlugin.user.js`](https://raw.githubusercontent.com/dotechin/CardsTradeMatcherPlugin/main/CardsTradeMatcherPlugin.user.js)
+- **Text mirror:** [`CardsTradeMatcherPlugin.txt`](CardsTradeMatcherPlugin.txt)
+- **Version:** 6.2.1.0
 - **Authors:** Rudokhvist, iBreakEverything, dotechin
 
 ## Features
@@ -35,8 +36,8 @@ A userscript that matches Steam Trading Cards with ASF bots and Steam friends.
 ## Installation
 
 1. Install a userscript manager (e.g. [Tampermonkey](https://www.tampermonkey.net/), [Greasemonkey](https://www.greasespot.net/), or [Violentmonkey](https://violentmonkey.github.io/))
-2. Open the raw version of [`CardsTradeMatcherPlugin.user.js`](CardsTradeMatcherPlugin.user.js) and use your userscript manager's install flow, or install directly from Greasyfork if published there
-3. If your manager does not support direct GitHub installs, open [`CardsTradeMatcherPlugin.txt`](CardsTradeMatcherPlugin.txt), copy the contents, and create a new userscript manually
+2. Open the [direct install URL](https://raw.githubusercontent.com/dotechin/CardsTradeMatcherPlugin/main/CardsTradeMatcherPlugin.user.js) and use your userscript manager's install flow, or install directly from Greasyfork if published there
+3. If your manager does not support direct GitHub installs, open [`CardsTradeMatcherPlugin.user.js`](CardsTradeMatcherPlugin.user.js), copy the contents, and create a new userscript manually
 4. Navigate to your Steam badges page (`steamcommunity.com/id/<yourname>/badges`) to use the matcher
 
 ## Known Limitations
