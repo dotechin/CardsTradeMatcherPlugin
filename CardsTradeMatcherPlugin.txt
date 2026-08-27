@@ -575,7 +575,7 @@
                 continue;
             }
             let totalCards = 0;
-            for (let j = 0; j < badges[i].maxCards; j++) {
+            for (let j = 0; j < badges[i].cards.length; j++) {
                 totalCards += badges[i].cards[j].count;
             }
             badges[i].maxSets = Math.floor(totalCards / badges[i].maxCards);
@@ -1770,7 +1770,7 @@
         }
         cacheBypassActive = globalSettings.forceFreshScan === true;
         resetCacheStats();
-        if (cacheBypassActive || !isCacheValid(bots, enabledSources) || bots.Result === undefined || bots.Success !== true) {
+        if (!isCacheValid(bots, enabledSources) || bots.Result === undefined || bots.Success !== true) {
             fetchBots();
             return;
         }
