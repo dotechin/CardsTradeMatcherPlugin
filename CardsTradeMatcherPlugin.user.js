@@ -10,7 +10,7 @@
 // @match           *://steamcommunity.com/id/*/badges/
 // @match           *://steamcommunity.com/profiles/*/badges
 // @match           *://steamcommunity.com/profiles/*/badges/
-// @match           *://steamcommunity.com/tradeoffer/new/*source=asfstm*
+// @match           *://steamcommunity.com/tradeoffer/new/*
 // @version         6.1.0.0
 // @connect         asf.justarchi.net
 // @grant           GM.xmlHttpRequest
