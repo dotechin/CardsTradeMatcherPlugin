@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name            ASF STM Unified
+// @name            ASF STM
 // @namespace       https://greasyfork.org/users/738914
 // @description     ASF bot and friend trade matcher
 // @license         Apache-2.0
