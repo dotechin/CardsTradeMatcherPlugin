@@ -764,7 +764,7 @@
                         //try to match
                         let myInd = myBadge.cards.findIndex((a) => a.number === theirBadge.cards[j].number); //index of slot where we receive card
                         if ((myState === 0 && myBadge.cards[myInd].count < myBadge.maxSets) || (myState === 1 && myBadge.cards[myInd].count < myBadge.lastSet)) {
-                            //we need this ^Kfor the Emperor
+                            //we need this for the Emperor
                             //find a card to match.
                             for (let k = 0; k < myInd; k++) {
                                 //index of card we give
