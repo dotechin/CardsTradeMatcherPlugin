@@ -208,7 +208,7 @@
             }
             const current = merged.get(key);
             current.SourceTypes = Array.from(new Set(current.SourceTypes.concat(target.SourceTypes))).sort();
-            if ((!current.ProfilePath || current.ProfilePath.startsWith('profiles/')) && target.ProfilePath) {
+            if ((!current.ProfilePath || current.ProfilePath.startsWith('profiles/')) && target.ProfilePath && !target.ProfilePath.startsWith('profiles/')) {
                 current.ProfilePath = target.ProfilePath;
             }
             current.AvatarHash = current.AvatarHash || target.AvatarHash;
@@ -288,7 +288,7 @@
                 globalSettings.fairBots = configDialog.querySelector("#fairBots").checked;
                 globalSettings.sortByName = configDialog.querySelector("#sortByName").checked;
                 let newsortBotsBy = [];
-                configDialog.querySelectorAll("[id^=sortBotsBy").forEach(function (elem) {
+                configDialog.querySelectorAll("[id^=sortBotsBy]").forEach(function (elem) {
                     newsortBotsBy.push(elem.selectedOptions[0].value);
                 });
                 globalSettings.sortBotsBy = newsortBotsBy;
@@ -355,6 +355,8 @@
         if (globalSettings.matchFriends === true) {
             globalSettings.scanFriends = true;
             globalSettings.scanBots = false;
+            delete globalSettings.matchFriends;
+            SaveConfig();
         }
         if (globalSettings.scanBots === false && globalSettings.scanFriends === false) {
             globalSettings.scanBots = true;
@@ -1197,7 +1199,7 @@
                 if (status !== 200) {
                 } else {
                 }
-                stopEventCleanup('error feting badges page: request error');
+                stopEventCleanup('error fetching badges page: request error');
                 return;
             }
         };
@@ -1260,11 +1262,15 @@
                             if (element) {
                                 element.remove();
                             }
-                            globalSettings.scanFilters = globalSettings.scanFilters.filter(x => x.appId !== appId);
+                            globalSettings.scanFilters = globalSettings.scanFilters.filter(x => x.appId !== Number(appId));
                             resolve(`Invalid appId: ${appId}`);
+                            return;
                         }
                         const title = selector.split('</span')[0];
-                        globalSettings.scanFilters.find(x => x.appId == appId).title = title;
+                        const scanFilter = globalSettings.scanFilters.find(x => x.appId == appId);
+                        if (scanFilter) {
+                            scanFilter.title = title;
+                        }
                         const anchor = document.querySelector(`#scan-filter-name-${appId}`);
                         if (anchor) {
                             [...anchor.childNodes].find(x => x.nodeType === Node.TEXT_NODE).nodeValue = title;
@@ -1295,7 +1301,7 @@
                     tradeParams.filter.push(Number(appId));
                 }
             } else {
-                matches[i].style.display = event.target.checked ? "inline-block" : "none";
+                matches[i].style.display = "none";
                 let index = tradeParams.filter.indexOf(Number(appId));
                 if (index !== -1) {
                     tradeParams.filter.splice(index, 1);
@@ -1375,7 +1381,8 @@
         let mainContentDiv = document.getElementsByClassName("maincontent")[0];
         mainContentDiv.textContent = "";
         mainContentDiv.style.width = "90%";
-        mainContentDiv.innerHTML = `<div class="profile_badges_header"><div id="throbber"><div class="LoadingWrapper"><div class="LoadingThrobber"><div class="Bar Bar1"></div><div class="Bar Bar2"></div><div class="Bar Bar3"></div></div></div></div><div style="display: flex;flex-direction: column;align-items: center;"><div class="progress-container"><div class="progress-step"><div id="scan-pages-radial" class="radial-progress" style="--progress: 0deg;"><div id="scan-pages-text" class="progress-inner">?</div></div><span id="scan-pages-label" class="label">${globalSettings.useScanFilters && globalSettings.scanFilters.filter(x => x.active).length ? 'Filters' : 'Badge Pages'}</span></div><div class="progress-step"><div id="scan-badges-radial" class="radial-progress" style="--progress: 0deg;"><div id="scan-badges-text" class="progress-inner">?</div></div><span id="scan-badges-label" class="label">Badges</span></div><div class="progress-step"><div id="scan-bots-radial" class="radial-progress" style="--progress: 0deg;"><div id="scan-bots-text" class="progress-inner">?</div></div><span id="scan-bots-label" class="label">Targets</span></div><div class="progress-step"><div id="bots-badges-radial" class="radial-progress" style="--progress: 0deg;"><div id="bots-badges-text" class="progress-inner">?</div></div><span id="bots-badges-label" class="label">Target Badges</span></div></div></div></div><div id="asf_stm_filters" style="position: fixed; z-index: 1000; right: 5px; bottom: 45px; transition-duration: 500ms; transition-timing-function: ease; margin-right: -50%; padding: 5px; max-width: 40%; display: inline-block; border-radius: 2px; background:${globalSettings.filterBackgroundColor}; color: #67c1f5;"><div style="white-space: nowrap;">Select:<a id="asf_stm_filter_all" class="commentthread_pagelinks">all</a><a id="asf_stm_filter_none" class="commentthread_pagelinks">none</a><a id="asf_stm_filter_invert" class="commentthread_pagelinks">invert</a></div><hr /><div id="asf_stm_filters_body"><span id="asf_stm_placeholder" style="margin-right: 15px;">No matches to filter</span></div></div><div style="position: fixed;z-index: 1000;right: 5px;bottom: 5px;" id="asf_stm_filters_button_div"><a id="asf_stm_filters_button" class="btnv6_blue_hoverfade btn_medium"><span>Filters</span></a></div>`;
+        const partialSourceWarning = bots.partialFailure ? `<div style="color:#e5c07b;text-align:center;margin-bottom:0.75rem;">Warning: one or more enabled sources could not be fetched; results may be partial.</div>` : "";
+        mainContentDiv.innerHTML = `<div class="profile_badges_header"><div id="throbber"><div class="LoadingWrapper"><div class="LoadingThrobber"><div class="Bar Bar1"></div><div class="Bar Bar2"></div><div class="Bar Bar3"></div></div></div></div><div style="display: flex;flex-direction: column;align-items: center;">${partialSourceWarning}<div class="progress-container"><div class="progress-step"><div id="scan-pages-radial" class="radial-progress" style="--progress: 0deg;"><div id="scan-pages-text" class="progress-inner">?</div></div><span id="scan-pages-label" class="label">${globalSettings.useScanFilters && globalSettings.scanFilters.filter(x => x.active).length ? 'Filters' : 'Badge Pages'}</span></div><div class="progress-step"><div id="scan-badges-radial" class="radial-progress" style="--progress: 0deg;"><div id="scan-badges-text" class="progress-inner">?</div></div><span id="scan-badges-label" class="label">Badges</span></div><div class="progress-step"><div id="scan-bots-radial" class="radial-progress" style="--progress: 0deg;"><div id="scan-bots-text" class="progress-inner">?</div></div><span id="scan-bots-label" class="label">Targets</span></div><div class="progress-step"><div id="bots-badges-radial" class="radial-progress" style="--progress: 0deg;"><div id="bots-badges-text" class="progress-inner">?</div></div><span id="bots-badges-label" class="label">Target Badges</span></div></div></div></div><div id="asf_stm_filters" style="position: fixed; z-index: 1000; right: 5px; bottom: 45px; transition-duration: 500ms; transition-timing-function: ease; margin-right: -50%; padding: 5px; max-width: 40%; display: inline-block; border-radius: 2px; background:${globalSettings.filterBackgroundColor}; color: #67c1f5;"><div style="white-space: nowrap;">Select:<a id="asf_stm_filter_all" class="commentthread_pagelinks">all</a><a id="asf_stm_filter_none" class="commentthread_pagelinks">none</a><a id="asf_stm_filter_invert" class="commentthread_pagelinks">invert</a></div><hr /><div id="asf_stm_filters_body"><span id="asf_stm_placeholder" style="margin-right: 15px;">No matches to filter</span></div></div><div style="position: fixed;z-index: 1000;right: 5px;bottom: 5px;" id="asf_stm_filters_button_div"><a id="asf_stm_filters_button" class="btnv6_blue_hoverfade btn_medium"><span>Filters</span></a></div>`;
         document.getElementById("asf_stm_filters_body").addEventListener("change", filterEventHandler);
         document.getElementById("asf_stm_filter_all").addEventListener("click", filterSwitchesHandler);
         document.getElementById("asf_stm_filter_none").addEventListener("click", filterSwitchesHandler);
@@ -1545,11 +1552,11 @@
                         try {
                             const parser = new DOMParser();
                             const friendListDocument = parser.parseFromString(response.responseText ?? response.response, 'text/html');
-                            let steamID3 = Array.from(friendListDocument.querySelectorAll('div.friendBlock'), x => x.dataset.miniprofile);
+                            let accountIDs = Array.from(friendListDocument.querySelectorAll('div.friendBlock'), x => x.dataset.miniprofile);
                             let profile = Array.from(friendListDocument.querySelectorAll('a.friendBlockLinkOverlay'), x => x.href.replace(/https:\/\/steamcommunity.com\//g, ''));
-                            let avatarHash = Array.from(friendListDocument.querySelectorAll('img'), img => img.src).map(str => str.match(/[a-z0-9]{40}/) ? str.match(/[a-z0-9]{40}/)[0] : null);
+                            let avatarHash = Array.from(friendListDocument.querySelectorAll('div.friendBlock img'), img => img.src).map(str => str.match(/[a-z0-9]{40}/)?.[0] ?? null);
                             let nickname = Array.from(friendListDocument.querySelectorAll('div.friendBlockContent'), x => x.childNodes[0]?.data?.trim() ?? 'Unknown friend');
-                            resolve(profile.map((profileLink, index) => normalizeFriend(profileLink, avatarHash[index], nickname[index], steamID3[index])));
+                            resolve(profile.map((profileLink, index) => normalizeFriend(profileLink, avatarHash[index], nickname[index], accountIDs[index])));
                         } catch (e) {
                             reject(e);
                         }
@@ -1587,13 +1594,19 @@
                 document.getElementById("asf_stm_button_div").setAttribute("title", "Can't fetch scan targets");
                 return;
             }
+            const partialFailure = results.some(result => result.status !== "fulfilled");
             bots = {
                 Success: true,
                 cacheTime: Date.now(),
+                partialFailure: partialFailure,
                 sourceState: enabledSources,
                 Result: mergeTargets(successfulResults),
             };
-            localStorage.setItem(`${STORAGE_PREFIX}.BotCache`, JSON.stringify(bots));
+            try {
+                localStorage.setItem(`${STORAGE_PREFIX}.BotCache`, JSON.stringify(bots));
+            } catch (error) {
+                console.warn("Failed to cache unified scan targets", error);
+            }
             buttonPressedEvent();
         });
     }
@@ -1857,7 +1870,7 @@
                 if (vars.match === "all") {
                     filter = params.filter;
                 } else {
-                    if (Number(vars.match) === NaN) {
+                    if (isNaN(Number(vars.match))) {
                         throw new Error("invalid url parameter");
                     }
                     filter.push(Number(vars.match));
