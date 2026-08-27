@@ -38,6 +38,9 @@
         botBadges: {currentStep: 0, steps: 0, radialElement: null, textElement: null}
     };
     const STORAGE_PREFIX = "TempAsfStm.ASF.STM.Unified";
+    const CACHE_SCHEMA_VERSION = 1;
+    const INVENTORY_CACHE_KEY = `${STORAGE_PREFIX}.InventoryCache.v${CACHE_SCHEMA_VERSION}`;
+    const INVENTORY_CACHE_MAX_ENTRIES = 120;
     let defaultSettings = {
         scanBots: true,
         scanFriends: true,
@@ -63,6 +66,16 @@
         scanFilters: [],
         autoAddScanFilters: true,
         autoDeleteScanFilters: true,
+        enableInventoryCache: true,
+        inventoryCacheTtlMinutes: 5,
+        forceFreshScan: false,
+    };
+    let cacheStats = {
+        hits: 0,
+        misses: 0,
+        writes: 0,
+        evictions: 0,
+        mode: "disabled",
     };
     let cardNames = new Set();
     let tradeParams = {
@@ -345,6 +358,181 @@
             cache.sourceState === undefined ||
             cache.sourceState.scanBots !== enabledSources.scanBots ||
             cache.sourceState.scanFriends !== enabledSources.scanFriends);
+    }
+
+    function isInventoryCacheEnabled() {
+        return globalSettings.enableInventoryCache !== false;
+    }
+
+    function getInventoryCacheTtlMs() {
+        const ttlMinutes = Number(globalSettings.inventoryCacheTtlMinutes);
+        if (isNaN(ttlMinutes) || ttlMinutes <= 0) {
+            return 5 * 60000;
+        }
+        return ttlMinutes * 60000;
+    }
+
+    function resetCacheStats() {
+        cacheStats = {
+            hits: 0,
+            misses: 0,
+            writes: 0,
+            evictions: 0,
+            mode: globalSettings.forceFreshScan ? "force-fresh" : isInventoryCacheEnabled() ? "enabled" : "disabled",
+        };
+        updateCacheStatus();
+    }
+
+    function updateCacheStatus() {
+        const status = document.getElementById("asf_stm_cache_status");
+        if (!status) {
+            return;
+        }
+        if (cacheStats.mode === "disabled") {
+            status.textContent = "Inventory cache: disabled";
+            return;
+        }
+        if (cacheStats.mode === "force-fresh") {
+            status.textContent = `Inventory cache: bypassed this run (hits: ${cacheStats.hits}, misses: ${cacheStats.misses}, writes: ${cacheStats.writes})`;
+            return;
+        }
+        status.textContent = `Inventory cache: hits ${cacheStats.hits} | misses ${cacheStats.misses} | writes ${cacheStats.writes} | evictions ${cacheStats.evictions}`;
+    }
+
+    function getInventoryScopeKey() {
+        const appIds = myBadges.map((badge) => Number(badge.appId)).filter(appId => !isNaN(appId)).sort((a, b) => a - b);
+        return appIds.join(",");
+    }
+
+    function buildInventoryCacheKey(entryType, profileId, sourceType, scopeKey) {
+        return `${entryType}|${profileId}|${sourceType}|${scopeKey}`;
+    }
+
+    function loadInventoryCacheStore() {
+        try {
+            const parsed = JSON.parse(localStorage.getItem(INVENTORY_CACHE_KEY));
+            if (!parsed || parsed.version !== CACHE_SCHEMA_VERSION || typeof parsed.entries !== "object" || parsed.entries === null) {
+                return { version: CACHE_SCHEMA_VERSION, entries: {} };
+            }
+            return parsed;
+        } catch (error) {
+            return { version: CACHE_SCHEMA_VERSION, entries: {} };
+        }
+    }
+
+    function saveInventoryCacheStore(store) {
+        try {
+            localStorage.setItem(INVENTORY_CACHE_KEY, JSON.stringify(store));
+        } catch (error) {
+            console.warn("Failed to save inventory cache", error);
+        }
+    }
+
+    function clearInventoryCacheStore() {
+        localStorage.removeItem(INVENTORY_CACHE_KEY);
+    }
+
+    function isValidCardSnapshot(card) {
+        return !(card === null ||
+            typeof card !== "object" ||
+            typeof card.hash !== "string" ||
+            typeof card.item !== "string" ||
+            typeof card.iconUrl !== "string" ||
+            typeof card.number !== "number" ||
+            typeof card.count !== "number" ||
+            isNaN(card.count) ||
+            isNaN(card.number));
+    }
+
+    function isValidBadgeSnapshot(badge) {
+        if (badge === null || typeof badge !== "object") {
+            return false;
+        }
+        if (typeof badge.appId !== "number" || isNaN(badge.appId) || typeof badge.title !== "string" || !Array.isArray(badge.cards)) {
+            return false;
+        }
+        return badge.cards.every(isValidCardSnapshot);
+    }
+
+    function isInventoryCacheEntryValid(entry, expected) {
+        if (entry === null || typeof entry !== "object") {
+            return false;
+        }
+        if (entry.version !== CACHE_SCHEMA_VERSION || typeof entry.cacheTime !== "number" || entry.cacheTime + getInventoryCacheTtlMs() < Date.now()) {
+            return false;
+        }
+        if (entry.entryType !== expected.entryType || entry.profileId !== expected.profileId || entry.sourceType !== expected.sourceType || entry.scopeKey !== expected.scopeKey) {
+            return false;
+        }
+        if (!Array.isArray(entry.appIds) || entry.appIds.join(",") !== expected.appIds.join(",")) {
+            return false;
+        }
+        if (!Array.isArray(entry.badges) || entry.badges.length !== expected.appIds.length) {
+            return false;
+        }
+        return entry.badges.every(isValidBadgeSnapshot);
+    }
+
+    function getInventoryCacheEntry(cacheKey, expectedMeta) {
+        if (!isInventoryCacheEnabled() || globalSettings.forceFreshScan) {
+            updateCacheStatus();
+            return null;
+        }
+        const store = loadInventoryCacheStore();
+        const entry = store.entries[cacheKey] ?? null;
+        if (entry && isInventoryCacheEntryValid(entry, expectedMeta)) {
+            cacheStats.hits++;
+            updateCacheStatus();
+            return deepClone(entry.badges);
+        }
+        if (entry) {
+            delete store.entries[cacheKey];
+            saveInventoryCacheStore(store);
+        }
+        cacheStats.misses++;
+        updateCacheStatus();
+        return null;
+    }
+
+    function evictInventoryCacheEntries(store) {
+        const entries = Object.entries(store.entries);
+        if (entries.length <= INVENTORY_CACHE_MAX_ENTRIES) {
+            return;
+        }
+        entries.sort((a, b) => (a[1].cacheTime ?? 0) - (b[1].cacheTime ?? 0));
+        const toRemove = entries.length - INVENTORY_CACHE_MAX_ENTRIES;
+        for (let i = 0; i < toRemove; i++) {
+            delete store.entries[entries[i][0]];
+            cacheStats.evictions++;
+        }
+    }
+
+    function setInventoryCacheEntry(cacheKey, payload) {
+        if (!isInventoryCacheEnabled() || globalSettings.forceFreshScan) {
+            updateCacheStatus();
+            return;
+        }
+        const store = loadInventoryCacheStore();
+        store.entries[cacheKey] = {
+            version: CACHE_SCHEMA_VERSION,
+            cacheTime: Date.now(),
+            entryType: payload.entryType,
+            sourceType: payload.sourceType,
+            profileId: payload.profileId,
+            scopeKey: payload.scopeKey,
+            appIds: payload.appIds,
+            badges: deepClone(payload.badges),
+        };
+        evictInventoryCacheEntries(store);
+        saveInventoryCacheStore(store);
+        cacheStats.writes++;
+        updateCacheStatus();
+    }
+
+    function markProgressComplete(radial) {
+        progressRadials[radial].currentStep = progressRadials[radial].steps;
+        progressRadials[radial].radialElement.classList.add('full-blue');
+        progressRadials[radial].textElement.textContent = '✓';
     }
 
     function createScanFilterElement(active, appId, gameName) {
