@@ -565,6 +565,10 @@
 
     function finalizeBadgeCollection(badges, removeUnmatchable) {
         for (let i = badges.length - 1; i >= 0; i--) {
+            if (badges[i].cards.length === 0) {
+                badges.splice(i, 1);
+                continue;
+            }
             badges[i].cards.sort((a, b) => b.count - a.count);
             if (removeUnmatchable && badges[i].cards[0].count - badges[i].cards[badges[i].cards.length - 1].count < 2) {
                 badges.splice(i, 1);
@@ -1741,11 +1745,11 @@
         document.querySelector('#throbber').style.display = 'none';
         enableButton();
         document.querySelector('#asf_stm_stop_div').hidden = true;
-        if (cacheBypassActive && globalSettings.forceFreshScan) {
-            globalSettings.forceFreshScan = false;
-            SaveConfig();
-        }
         if (cacheBypassActive) {
+            if (globalSettings.forceFreshScan) {
+                globalSettings.forceFreshScan = false;
+                SaveConfig();
+            }
             cacheBypassActive = false;
             cacheStats.mode = isInventoryCacheEnabled() ? "enabled" : "disabled";
             updateCacheStatus();
