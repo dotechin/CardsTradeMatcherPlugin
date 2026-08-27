@@ -913,6 +913,18 @@
         return "#";
     }
 
+    function sanitizeSteamMediaUrl(value) {
+        try {
+            const url = new URL(String(value ?? ""));
+            if (url.protocol === "https:" && /(^|\.)steamstatic\.com$|(^|\.)akamaihd\.net$/i.test(url.hostname)) {
+                return url.toString().replace(/\/+$/, "");
+            }
+        } catch (error) {
+            // ignored
+        }
+        return "https://store.akamai.steamstatic.com/public/images/gift/steam_logo_digitalgiftcard.png";
+    }
+
     function sanitizeAvatarHash(value) {
         const stringValue = String(value ?? "");
         return /^[0-9a-f]+$/i.test(stringValue) ? stringValue : "fef49e7fa7e1997310d705b2a6158ff8dc1cdfeb";
@@ -929,8 +941,8 @@
     function populateCards(item) {
         let htmlCards = "";
         for (let j = 0; j < item.cards.length; j++) {
-            let itemIcon = item.cards[j].iconUrl;
-            let itemName = item.cards[j].item;
+            const itemIcon = sanitizeSteamMediaUrl(item.cards[j].iconUrl);
+            const itemName = escapeHtml(item.cards[j].item);
             for (let k = 0; k < item.cards[j].count; k++) {
                 let cardTemplate = `
                     <div class="showcase_slot">
