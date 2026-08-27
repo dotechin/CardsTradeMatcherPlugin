@@ -16,7 +16,7 @@
 // @grant           GM.xmlHttpRequest
 // @grant           GM_addStyle
 // @grant           GM_xmlhttpRequest
-// @require         https://raw.githubusercontent.com/dotechin/CardsTradeMatcherPlugin/6a5f72cc2e2d0510122dbdc335c73d147431c46a/CardsTradeMatcherPlugin.txt
+// @require         https://raw.githubusercontent.com/dotechin/CardsTradeMatcherPlugin/abbdd927adfe001a271da6d14c34e44b2f8f0fbb/CardsTradeMatcherPlugin.txt
 // ==/UserScript==
 
 // Installable wrapper for userscript managers.
