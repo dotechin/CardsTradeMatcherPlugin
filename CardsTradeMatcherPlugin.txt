@@ -402,9 +402,12 @@
         });
     }
 
+    function getInventoryScopeAppIds(badges = myBadges) {
+        return badges.map((badge) => Number(badge.appId)).filter(appId => !isNaN(appId)).sort((a, b) => a - b);
+    }
+
     function getInventoryScopeKey(badges = myBadges) {
-        const appIds = badges.map((badge) => Number(badge.appId)).filter(appId => !isNaN(appId)).sort((a, b) => a - b);
-        return appIds.join(",");
+        return getInventoryScopeAppIds(badges).join(",");
     }
 
     function buildInventoryCacheKey(entryType, profileId, sourceType, scopeKey) {
@@ -412,12 +415,12 @@
     }
 
     function buildInventoryCacheMeta(entryType, profileId, sourceType, badges = myBadges) {
-        const appIds = badges.map((badge) => Number(badge.appId)).filter(appId => !isNaN(appId)).sort((a, b) => a - b);
+        const appIds = getInventoryScopeAppIds(badges);
         return {
             entryType: entryType,
             profileId: profileId,
             sourceType: sourceType,
-            scopeKey: appIds.join(","),
+            scopeKey: getInventoryScopeKey(badges),
             appIds: appIds,
         };
     }
@@ -1738,6 +1741,15 @@
         document.querySelector('#throbber').style.display = 'none';
         enableButton();
         document.querySelector('#asf_stm_stop_div').hidden = true;
+        if (cacheBypassActive && globalSettings.forceFreshScan) {
+            globalSettings.forceFreshScan = false;
+            SaveConfig();
+        }
+        if (cacheBypassActive) {
+            cacheBypassActive = false;
+            cacheStats.mode = isInventoryCacheEnabled() ? "enabled" : "disabled";
+            updateCacheStatus();
+        }
         console.log(`Stopping: ${reason}`);
     }
 
@@ -1753,10 +1765,6 @@
             return;
         }
         cacheBypassActive = globalSettings.forceFreshScan === true;
-        if (cacheBypassActive) {
-            globalSettings.forceFreshScan = false;
-            SaveConfig();
-        }
         resetCacheStats();
         if (cacheBypassActive || !isCacheValid(bots, enabledSources) || bots.Result === undefined || bots.Success !== true) {
             fetchBots();
