@@ -91,6 +91,8 @@
     let inventoryRefreshQueue = [];
     let inventoryRefreshRunning = false;
     let inventoryCacheStore = null;
+    let inventoryCacheGeneration = 0;
+    let scanGeneration = 0;
     let cardNames = new Set();
     let tradeParams = {
         matches: {},
@@ -533,6 +535,8 @@
     function clearInventoryCacheStore() {
         localStorage.removeItem(INVENTORY_CACHE_KEY);
         inventoryCacheStore = null;
+        inventoryCacheGeneration++;
+        inventoryRefreshQueue.length = 0;
     }
 
     function clearInventoryCacheEventHandler() {
@@ -690,12 +694,26 @@
         done();
     }
 
+    function isInventoryRefreshCurrent(cacheGeneration, refreshScanGeneration) {
+        return cacheGeneration === inventoryCacheGeneration && refreshScanGeneration === scanGeneration;
+    }
+
     function refreshOwnInventoryCacheEntry(cacheKey, cacheMeta, badgeTemplates) {
+        const cacheGeneration = inventoryCacheGeneration;
+        const refreshScanGeneration = scanGeneration;
         enqueueInventoryCacheRefresh(cacheKey, function (done) {
             const refreshedBadges = deepClone(badgeTemplates);
             let refreshErrors = 0;
             function refreshBadge(index) {
+                if (!isInventoryRefreshCurrent(cacheGeneration, refreshScanGeneration)) {
+                    done();
+                    return;
+                }
                 if (index >= refreshedBadges.length) {
+                    if (!isInventoryRefreshCurrent(cacheGeneration, refreshScanGeneration)) {
+                        done();
+                        return;
+                    }
                     setInventoryCacheEntry(cacheKey, {
                         entryType: cacheMeta.entryType,
                         sourceType: cacheMeta.sourceType,
@@ -712,6 +730,10 @@
                 xhr.open("GET", `https://steamcommunity.com/${myProfileLink}/ajaxgetbadgeinfo/${refreshedBadges[index].appId}`, true);
                 xhr.responseType = "json";
                 xhr.onload = function () {
+                    if (!isInventoryRefreshCurrent(cacheGeneration, refreshScanGeneration)) {
+                        done();
+                        return;
+                    }
                     const status = xhr.status;
                     try {
                         if (status === 200 && xhr.response !== undefined && xhr.response.eresult == 1 && xhr.response.badgedata.rgCards.length >= 5) {
@@ -744,6 +766,10 @@
                     }
                 };
                 xhr.onerror = function () {
+                    if (!isInventoryRefreshCurrent(cacheGeneration, refreshScanGeneration)) {
+                        done();
+                        return;
+                    }
                     refreshErrors++;
                     if (refreshErrors <= globalSettings.maxErrors) {
                         setTimeout(function () {
@@ -760,11 +786,22 @@
     }
 
     function refreshTargetInventoryCacheEntry(cacheKey, cacheMeta, target, badgeTemplates) {
+        const cacheGeneration = inventoryCacheGeneration;
+        const refreshScanGeneration = scanGeneration;
+        const cardHashes = myBadges.map((badge) => Object.fromEntries(badge.cards.map((card) => [card.number, card.hash])));
         enqueueInventoryCacheRefresh(cacheKey, function (done) {
             const refreshedBadges = deepClone(badgeTemplates);
             let refreshErrors = 0;
             function refreshBadge(index, idLink) {
+                if (!isInventoryRefreshCurrent(cacheGeneration, refreshScanGeneration)) {
+                    done();
+                    return;
+                }
                 if (index >= refreshedBadges.length) {
+                    if (!isInventoryRefreshCurrent(cacheGeneration, refreshScanGeneration)) {
+                        done();
+                        return;
+                    }
                     setInventoryCacheEntry(cacheKey, {
                         entryType: cacheMeta.entryType,
                         sourceType: cacheMeta.sourceType,
@@ -781,6 +818,10 @@
                 xhr.open("GET", `https://steamcommunity.com/${idLink ?? getTargetProfileLink(target)}/gamecards/${refreshedBadges[index].appId}`, true);
                 xhr.responseType = "document";
                 xhr.onload = function () {
+                    if (!isInventoryRefreshCurrent(cacheGeneration, refreshScanGeneration)) {
+                        done();
+                        return;
+                    }
                     const status = xhr.status;
                     if (status === 200) {
                         const badgeCards = xhr.response.documentElement.querySelectorAll(".badge_card_set_card");
@@ -797,14 +838,14 @@
                                         name = name + element.textContent;
                                     }
                                 });
-                                const myCard = myBadges[index].cards.find((card) => card.number === i);
-                                if (myCard === undefined) {
+                                const cardHash = cardHashes[index]?.[i];
+                                if (cardHash === undefined) {
                                     failInventoryCacheRefresh(done);
                                     return;
                                 }
                                 refreshedBadges[index].cards.push({
                                     item: name.trim(),
-                                    hash: myCard.hash,
+                                    hash: cardHash,
                                     count: Number(quantity),
                                     iconUrl: badgeCards[i].querySelector(".gamecard").src.trim(),
                                     number: i,
@@ -827,6 +868,10 @@
                     }
                 };
                 xhr.onerror = function () {
+                    if (!isInventoryRefreshCurrent(cacheGeneration, refreshScanGeneration)) {
+                        done();
+                        return;
+                    }
                     refreshErrors++;
                     if (refreshErrors <= globalSettings.maxErrors) {
                         setTimeout(function () {
@@ -2139,6 +2184,7 @@
     }
 
     function buttonPressedEvent() {
+        scanGeneration++;
         if (globalSettings.preventClose) {
             window.addEventListener('beforeunload', function (e) {
                 e.preventDefault();
