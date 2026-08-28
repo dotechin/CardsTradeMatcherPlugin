@@ -11,7 +11,7 @@
 // @match           *://steamcommunity.com/profiles/*/badges
 // @match           *://steamcommunity.com/profiles/*/badges/
 // @match           *://steamcommunity.com/tradeoffer/new/*
-// @version         6.2.1.0
+// @version         6.2.2.0
 // @homepageURL     https://github.com/dotechin/CardsTradeMatcherPlugin
 // @supportURL      https://github.com/dotechin/CardsTradeMatcherPlugin/issues
 // @downloadURL     https://raw.githubusercontent.com/dotechin/CardsTradeMatcherPlugin/main/CardsTradeMatcherPlugin.user.js

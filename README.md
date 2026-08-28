@@ -6,8 +6,7 @@ A userscript that matches Steam Trading Cards with ASF bots and Steam friends.
 
 - **Installable file:** [`CardsTradeMatcherPlugin.user.js`](CardsTradeMatcherPlugin.user.js) (full userscript source)
 - **Direct install URL:** [`raw/CardsTradeMatcherPlugin.user.js`](https://raw.githubusercontent.com/dotechin/CardsTradeMatcherPlugin/main/CardsTradeMatcherPlugin.user.js)
-- **Text mirror:** [`CardsTradeMatcherPlugin.txt`](CardsTradeMatcherPlugin.txt)
-- **Version:** 6.2.1.0
+- **Version:** 6.2.2.0
 - **Authors:** Rudokhvist, iBreakEverything, dotechin
 
 ## Features
@@ -18,6 +17,7 @@ A userscript that matches Steam Trading Cards with ASF bots and Steam friends.
 - Scan filters to skip badges you don't need
 - Self-updating inventory cache with TTL, reuse, and manual bypass/clear controls
 - Blacklist support
+- Whitelist support for additional SteamIDs
 - Trade offer automation options (message, auto-send, post-trade action)
 - Debug mode
 
