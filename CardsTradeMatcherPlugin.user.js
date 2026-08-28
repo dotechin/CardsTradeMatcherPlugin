@@ -11,7 +11,7 @@
 // @match           *://steamcommunity.com/profiles/*/badges
 // @match           *://steamcommunity.com/profiles/*/badges/
 // @match           *://steamcommunity.com/tradeoffer/new/*
-// @version         6.2.1.0
+// @version         6.2.2.0
 // @homepageURL     https://github.com/dotechin/CardsTradeMatcherPlugin
 // @supportURL      https://github.com/dotechin/CardsTradeMatcherPlugin/issues
 // @downloadURL     https://raw.githubusercontent.com/dotechin/CardsTradeMatcherPlugin/main/CardsTradeMatcherPlugin.user.js
@@ -36,6 +36,7 @@
     let cacheBypassActive = false;
     let globalSettings = null;
     let blacklist = [];
+    let whitelist = [];
     let progressRadials = {
         scanPages: {currentStep: 0, steps: 0, radialElement: null, textElement: null},
         badges: {currentStep: 0, steps: 0, radialElement: null, textElement: null},
@@ -221,6 +222,26 @@
         };
     }
 
+    function normalizeWhitelistSteamID(steamID64) {
+        const normalizedSteamID64 = String(steamID64);
+        return {
+            SteamID: getPartner(normalizedSteamID64),
+            SteamID64: normalizedSteamID64,
+            TradePartner: getPartner(normalizedSteamID64),
+            ProfilePath: `profiles/${normalizedSteamID64}`,
+            AvatarHash: null,
+            MatchableTypes: [2, 3, 4, 5],
+            MatchEverything: false,
+            MaxTradeHoldDuration: 0,
+            Nickname: `SteamID ${normalizedSteamID64}`,
+            TotalGamesCount: 0,
+            TotalInventoryCount: 0,
+            TotalItemsCount: 0,
+            TradeToken: null,
+            SourceTypes: ['whitelist'],
+        };
+    }
+
     function mergeTargets(targetGroups) {
         const merged = new Map();
         targetGroups.flat().forEach((target) => {
@@ -252,7 +273,7 @@
         if (target.SourceTypes.length > 1) {
             return "shared";
         }
-        return target.SourceTypes[0] === "friends" ? "friends" : "asf";
+        return target.SourceTypes[0] === "friends" ? "friends" : target.SourceTypes[0] === "whitelist" ? "whitelist" : "asf";
     }
 
     function getSourceLabel(sourceKey) {
@@ -261,6 +282,8 @@
                 return "ASF only";
             case "friends":
                 return "Friends only";
+            case "whitelist":
+                return "Whitelist only";
             case "shared":
                 return "Shared";
             default:
@@ -276,8 +299,10 @@
                 return 1;
             case "friends":
                 return 2;
-            default:
+            case "whitelist":
                 return 3;
+            default:
+                return 4;
         }
     }
 
@@ -287,8 +312,8 @@
             return;
         }
 
-        const targetCounts = { all: 0, asf: 0, friends: 0, shared: 0 };
-        const matchCounts = { all: 0, asf: 0, friends: 0, shared: 0, visible: 0 };
+        const targetCounts = { all: 0, asf: 0, friends: 0, whitelist: 0, shared: 0 };
+        const matchCounts = { all: 0, asf: 0, friends: 0, whitelist: 0, shared: 0, visible: 0 };
 
         if (bots?.Result) {
             targetCounts.all = bots.Result.length;
@@ -310,6 +335,7 @@
             `Targets: <b>${targetCounts.all}</b>`,
             `ASF: <b>${targetCounts.asf}</b>`,
             `Friends: <b>${targetCounts.friends}</b>`,
+            `Whitelist: <b>${targetCounts.whitelist}</b>`,
             `Shared: <b>${targetCounts.shared}</b>`,
             `Matches: <b>${matchCounts.all}</b>`,
             `Visible: <b>${matchCounts.visible}</b>`,
@@ -362,7 +388,8 @@
             cache.cacheTime + botCacheTime < Date.now() ||
             cache.sourceState === undefined ||
             cache.sourceState.scanBots !== enabledSources.scanBots ||
-            cache.sourceState.scanFriends !== enabledSources.scanFriends);
+            cache.sourceState.scanFriends !== enabledSources.scanFriends ||
+            cache.sourceState.whitelist !== whitelist.join(","));
     }
 
     function isInventoryCacheEnabled() {
@@ -686,12 +713,13 @@
         }
         const scanFiltersTemplate = globalSettings.scanFilters.map(x => createScanFilterElement(x.active, x.appId, x.title)).join('');
 
-        const configDialogTemplate = `<div class="asf-stm-config"><ul class="asf_stm_tabs" style="margin: 0;padding: 0;"><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab1" name="asf_stm_tabs" checked><label for="asf_stm_tab1">Matcher</label><div id="asf_stm_tab-content1" class="asf_stm_content"><fieldset><legend>SCAN SOURCES</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Scan ASF bots</span><input type="checkbox" id="scanBots" ${globalSettings.scanBots ? 'checked' : ''} class="asf-stm-checkbox"><br><span class="asf-stm-margin-right">Scan Steam friends</span><input type="checkbox" id="scanFriends" ${globalSettings.scanFriends ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="All enabled sources are scanned together in one run."><img src="${questionmarkURL}"></a></div></fieldset><fieldset><legend>ASF BOTS</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Match with "Any" bots</span><input type="checkbox" id="anyBots" ${globalSettings.anyBots ? 'checked' : ''} class="asf-stm-checkbox"><br><span class="asf-stm-margin-right">Match with "Fair" bots</span><input type="checkbox" id="fairBots" ${globalSettings.fairBots ? 'checked' : ''} class="asf-stm-checkbox"></div><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Minimum items:</span><input type="number" id="botMinItems" value=${globalSettings.botMinItems} min="0" class="asf-stm-input"><br><span class="asf-stm-margin-right">Maximum items:</span><input type="number" id="botMaxItems" value=${globalSettings.botMaxItems} min="0" class="asf-stm-input"><a class="tooltip hover_tooltip" data-tooltip-text="Don't match with bots that has less or more than required limit of items in steam inventory. 0 means no limit on number of items"><img src="${questionmarkURL}"></a></div><div class="asf-stm-margin-bottom">${Array.from({ length: 4 }, (_, i) => createSortSelect(i)).join('')}</div></fieldset><fieldset><legend>INTERFACE</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Game filter pop-up background color:</span><input type="color" id="filterBackgroundColor" value="${filterBG[0]}" class="asf-stm-input" style="margin-right: 1.5em;"><span class="asf-stm-margin-right">opacity:</span><input type="range" id="filterBackgroundAlpha" value=${filterBG[1]} min=0 max=1 step=0.01 class="asf-stm-range" style="height: 4px;"><br></div><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Sort results by game name</span><input type="checkbox" id="sortByName" class="asf-stm-checkbox" ${globalSettings.sortByName ? 'checked' : ''}></div><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Prevent navigation or page leave</span><input type="checkbox" id="preventClose" class="asf-stm-checkbox" ${globalSettings.preventClose ? 'checked' : ''}><a class="tooltip hover_tooltip" data-tooltip-text="A dialog box will prevent navigation and exitting the page to avoid losing progess."><img src="${questionmarkURL}"></a></div></fieldset><fieldset><legend>INVENTORY CACHE</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Enable cache</span><input type="checkbox" id="enableInventoryCache" ${globalSettings.enableInventoryCache ? 'checked' : ''} class="asf-stm-checkbox"><br><span class="asf-stm-span">TTL (minutes):</span><input type="number" id="inventoryCacheTtlMinutes" value=${globalSettings.inventoryCacheTtlMinutes} min="1" class="asf-stm-input"><br><span class="asf-stm-margin-right">Bypass next scan</span><input type="checkbox" id="forceFreshScan" ${globalSettings.forceFreshScan ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Skips cached scan-target and inventory data once, then turns itself off after that run."><img src="${questionmarkURL}"></a></div><div class="asf-stm-margin-bottom"><button id="clearInventoryCache" class="btn_darkred_white_innerfade btn_small asf-stm-margin-right"><span>Clear inventory cache</span></button><span data-asf-stm-cache-status style="color:#8F98A0;"></span></div></fieldset><fieldset style="display: grid;grid-template-columns: repeat(2, 1fr);grid-template-rows: repeat(3, 1fr);gap: 12px;"><legend>SETTINGS</legend><fieldset style="grid-row: span 3 / span 3;grid-column-start: 2;grid-row-start: 1;"><legend>DEVELOPER</legend><div><span class="asf-stm-margin-right">Debug</span><input type="checkbox" id="debug" ${globalSettings.debug ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Enable additional output to console"><img src="${questionmarkURL}"></a></div></fieldset><div><span class="asf-stm-span">Web limiter delay (ms):</span><input type="number" id="weblimiter" value= ${globalSettings.weblimiter} min=0 class="asf-stm-input"></div><div style="grid-column-start: 1;grid-row-start: 2;"><span class="asf-stm-span">Delay on error (ms):</span><input type="number" id="errorLimiter" value=${globalSettings.errorLimiter} min=0 class="asf-stm-input"></div><div style="grid-column-start: 1;grid-row-start: 3;"><span class="asf-stm-span">Max errors:</span><input type="number" id="maxErrors" value=${globalSettings.maxErrors} min=0 class="asf-stm-input"></div></fieldset></div></li><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab2" name="asf_stm_tabs"><label for="asf_stm_tab2">Trade helper</label><div id="asf_stm_tab-content2" class="asf_stm_content"><fieldset><legend>TRADE OFFER MESSAGE</legend><textarea id="tradeMessage" name="tradeMessage" rows="4" cols="60" class="asf-stm-textarea"></textarea><a class="tooltip hover_tooltip" data-tooltip-text="Custom text that will be included automatically with your trade offers created through STM while using this userscript. To remove this functionality, simply delete the text."><img src="${questionmarkURL}"></a></fieldset><fieldset><legend>ACTION AFTER TRADE</legend><label for="after-trade" class="asf-stm-margin-right">After trade...</label><select id="doAfterTrade" name="after-trade" class="asf-stm-select asf-stm-margin-bottom"><option value="NOTHING" ${globalSettings.doAfterTrade === "NOTHING" ? 'selected' : ''}>Do Nothing</option><option value="CLOSE_WINDOW" ${globalSettings.doAfterTrade === "CLOSE_WINDOW" ? 'selected' : ''}>Close window</option><option value="CLICK_OK" ${globalSettings.doAfterTrade === "CLICK_OK" ? 'selected' : ''}>Click OK</option></select><a class="tooltip hover_tooltip" data-tooltip-html="<p>Determines what happens when you complete a trade offer.</p><ul><li><strong>Do nothing</strong>: Will do nothing more than the normal behavior.</li><li><strong>Close window</strong>: Will close the window after the trade offer is sent.</li><li><strong>Click OK</strong>: Will redirect you to the trade offers recap page.</li></ul>"><img src="${questionmarkURL}"></a></fieldset><fieldset><legend>CARDS OFFER</legend><label for="cards-order" class="asf-stm-margin-right">Cards order</label><select id="order" name="cards-order" class="form-control asf-stm-select asf-stm-margin-bottom"><option value="SORT" ${globalSettings.order === "SORT" ? 'selected' : ''}>Sorted</option><option value="RANDOM" ${globalSettings.order === "RANDOM" ? 'selected' : ''}>Random</option><option value="AS_IS" ${globalSettings.order === "AS_IS" ? 'selected' : ''}>As is</option></select><a class="tooltip hover_tooltip" data-tooltip-html="<p>Determines which card is added to trade.</p><ul><li><strong>Sorted</strong>: Will sort cards by their IDs before adding to trade. If you make several trade offers with the same card and one of them is accepted, the rest will have message &quot;cards unavilable to trade&quot;.</li><li><strong>Random</strong>: Will add cards to trade randomly. If you make several trade offers and one of them is accepted, only some of them will be unavilable for trade.</li><li><strong>As is</strong>: Script doesn't change anything in order. Results vary depending on browser, steam servers, weather...</li></ul>"><img src="${questionmarkURL}"></a></fieldset><fieldset><legend>AUTO-SEND TRADE OFFER</legend><div class="asf-stm-margin-bottom"><label for="auto-send" class="asf-stm-margin-right">Enable</label><input type="checkbox" id="autoSend" name="auto-send" value="1" ${globalSettings.autoSend ? 'checked' : ''} class="asf-stm-checkbox asf-stm-margin-bottom"><a class="tooltip hover_tooltip" data-tooltip-text="Makes it possible for the script to automatically send trade offers without any action on your side. This is not recommended as you should always check your trade offers, but, well, this is a possible thing. Please note that incomplete trade offers (missing cards, ...) won't be sent automatically even when this parameter is set to true."><img src="${questionmarkURL}"></a></div></fieldset></div></li><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab3" name="asf_stm_tabs"><label for="asf_stm_tab3">Blacklist</label><div id="asf_stm_tab-content3" class="asf_stm_content"><div class="title_text profile_xp_block_remaining"><h1 style="margin: 0.5em;">Comma-separated list of ignored steamIDs</h1><textarea class="asf-stm-textarea" id="blacklist" name="Blacklist" rows="17" cols="63"></textarea></div></div></li><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab4" name="asf_stm_tabs"><label for="asf_stm_tab4">Scan filters</label><div class="asf_stm_content" id="asf_stm_tab-content4"><fieldset><legend>SETTINGS</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Use scan filters</span><input type="checkbox" id="useScanFilters" ${globalSettings.useScanFilters ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Filter badges to cut short the duration of the scan."><img src="${questionmarkURL}"></a><br><span class="asf-stm-margin-right">Auto add new scan filters</span><input type="checkbox" id="autoAddScanFilters" ${globalSettings.autoAddScanFilters ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Add new scan filters from a fresh scan (clear all your filters)."><img src="${questionmarkURL}"></a><br><span class="asf-stm-margin-right">Auto delete old scan filters</span><input type="checkbox" id="autoDeleteScanFilters" ${globalSettings.autoDeleteScanFilters ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Delete scan filters from badges without duplicates."><img src="${questionmarkURL}"></a></div></fieldset><fieldset><legend>MANAGE SCAN FILTERS</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">App Id:</span><input type="number" id="addScanFilterAppId" step="10" required class="asf-stm-input asf-stm-margin-right appid-validity"><button id="addScanFilterButton" class="btn_blue_steamui btn_small asf-stm-margin-right"><span>Add scan filter</span></button><span id="addScanFilterStatus"></span></div><div class="asf-stm-margin-bottom"><button onclick="document.querySelector('#clearScanFilters').style.visibility = 'visible'" class="btn_plum btn_small asf-stm-margin-right"><span>Clear scan filters</span></button><button id="clearScanFilters" class="btn_darkred_white_innerfade btn_small" style="visibility: hidden;"><span>Are you sure?</span></button></div></fieldset><fieldset><legend>FILTERS</legend><div id="asf-stm-filters" style="column-gap: 4px;display: flex;flex-wrap: wrap;justify-content: flex-start;">${scanFiltersTemplate}</div></fieldset></div></li></ul></div>`;
+        const configDialogTemplate = `<div class="asf-stm-config"><ul class="asf_stm_tabs" style="margin: 0;padding: 0;"><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab1" name="asf_stm_tabs" checked><label for="asf_stm_tab1">Matcher</label><div id="asf_stm_tab-content1" class="asf_stm_content"><fieldset><legend>SCAN SOURCES</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Scan ASF bots</span><input type="checkbox" id="scanBots" ${globalSettings.scanBots ? 'checked' : ''} class="asf-stm-checkbox"><br><span class="asf-stm-margin-right">Scan Steam friends</span><input type="checkbox" id="scanFriends" ${globalSettings.scanFriends ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="All enabled sources are scanned together in one run."><img src="${questionmarkURL}"></a></div></fieldset><fieldset><legend>ASF BOTS</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Match with "Any" bots</span><input type="checkbox" id="anyBots" ${globalSettings.anyBots ? 'checked' : ''} class="asf-stm-checkbox"><br><span class="asf-stm-margin-right">Match with "Fair" bots</span><input type="checkbox" id="fairBots" ${globalSettings.fairBots ? 'checked' : ''} class="asf-stm-checkbox"></div><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Minimum items:</span><input type="number" id="botMinItems" value=${globalSettings.botMinItems} min="0" class="asf-stm-input"><br><span class="asf-stm-margin-right">Maximum items:</span><input type="number" id="botMaxItems" value=${globalSettings.botMaxItems} min="0" class="asf-stm-input"><a class="tooltip hover_tooltip" data-tooltip-text="Don't match with bots that has less or more than required limit of items in steam inventory. 0 means no limit on number of items"><img src="${questionmarkURL}"></a></div><div class="asf-stm-margin-bottom">${Array.from({ length: 4 }, (_, i) => createSortSelect(i)).join('')}</div></fieldset><fieldset><legend>INTERFACE</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Game filter pop-up background color:</span><input type="color" id="filterBackgroundColor" value="${filterBG[0]}" class="asf-stm-input" style="margin-right: 1.5em;"><span class="asf-stm-margin-right">opacity:</span><input type="range" id="filterBackgroundAlpha" value=${filterBG[1]} min=0 max=1 step=0.01 class="asf-stm-range" style="height: 4px;"><br></div><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Sort results by game name</span><input type="checkbox" id="sortByName" class="asf-stm-checkbox" ${globalSettings.sortByName ? 'checked' : ''}></div><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Prevent navigation or page leave</span><input type="checkbox" id="preventClose" class="asf-stm-checkbox" ${globalSettings.preventClose ? 'checked' : ''}><a class="tooltip hover_tooltip" data-tooltip-text="A dialog box will prevent navigation and exitting the page to avoid losing progess."><img src="${questionmarkURL}"></a></div></fieldset><fieldset><legend>INVENTORY CACHE</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Enable cache</span><input type="checkbox" id="enableInventoryCache" ${globalSettings.enableInventoryCache ? 'checked' : ''} class="asf-stm-checkbox"><br><span class="asf-stm-span">TTL (minutes):</span><input type="number" id="inventoryCacheTtlMinutes" value=${globalSettings.inventoryCacheTtlMinutes} min="1" class="asf-stm-input"><br><span class="asf-stm-margin-right">Bypass next scan</span><input type="checkbox" id="forceFreshScan" ${globalSettings.forceFreshScan ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Skips cached scan-target and inventory data once, then turns itself off after that run."><img src="${questionmarkURL}"></a></div><div class="asf-stm-margin-bottom"><button id="clearInventoryCache" class="btn_darkred_white_innerfade btn_small asf-stm-margin-right"><span>Clear inventory cache</span></button><span data-asf-stm-cache-status style="color:#8F98A0;"></span></div></fieldset><fieldset style="display: grid;grid-template-columns: repeat(2, 1fr);grid-template-rows: repeat(3, 1fr);gap: 12px;"><legend>SETTINGS</legend><fieldset style="grid-row: span 3 / span 3;grid-column-start: 2;grid-row-start: 1;"><legend>DEVELOPER</legend><div><span class="asf-stm-margin-right">Debug</span><input type="checkbox" id="debug" ${globalSettings.debug ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Enable additional output to console"><img src="${questionmarkURL}"></a></div></fieldset><div><span class="asf-stm-span">Web limiter delay (ms):</span><input type="number" id="weblimiter" value= ${globalSettings.weblimiter} min=0 class="asf-stm-input"></div><div style="grid-column-start: 1;grid-row-start: 2;"><span class="asf-stm-span">Delay on error (ms):</span><input type="number" id="errorLimiter" value=${globalSettings.errorLimiter} min=0 class="asf-stm-input"></div><div style="grid-column-start: 1;grid-row-start: 3;"><span class="asf-stm-span">Max errors:</span><input type="number" id="maxErrors" value=${globalSettings.maxErrors} min=0 class="asf-stm-input"></div></fieldset></div></li><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab2" name="asf_stm_tabs"><label for="asf_stm_tab2">Trade helper</label><div id="asf_stm_tab-content2" class="asf_stm_content"><fieldset><legend>TRADE OFFER MESSAGE</legend><textarea id="tradeMessage" name="tradeMessage" rows="4" cols="60" class="asf-stm-textarea"></textarea><a class="tooltip hover_tooltip" data-tooltip-text="Custom text that will be included automatically with your trade offers created through STM while using this userscript. To remove this functionality, simply delete the text."><img src="${questionmarkURL}"></a></fieldset><fieldset><legend>ACTION AFTER TRADE</legend><label for="after-trade" class="asf-stm-margin-right">After trade...</label><select id="doAfterTrade" name="after-trade" class="asf-stm-select asf-stm-margin-bottom"><option value="NOTHING" ${globalSettings.doAfterTrade === "NOTHING" ? 'selected' : ''}>Do Nothing</option><option value="CLOSE_WINDOW" ${globalSettings.doAfterTrade === "CLOSE_WINDOW" ? 'selected' : ''}>Close window</option><option value="CLICK_OK" ${globalSettings.doAfterTrade === "CLICK_OK" ? 'selected' : ''}>Click OK</option></select><a class="tooltip hover_tooltip" data-tooltip-html="<p>Determines what happens when you complete a trade offer.</p><ul><li><strong>Do nothing</strong>: Will do nothing more than the normal behavior.</li><li><strong>Close window</strong>: Will close the window after the trade offer is sent.</li><li><strong>Click OK</strong>: Will redirect you to the trade offers recap page.</li></ul>"><img src="${questionmarkURL}"></a></fieldset><fieldset><legend>CARDS OFFER</legend><label for="cards-order" class="asf-stm-margin-right">Cards order</label><select id="order" name="cards-order" class="form-control asf-stm-select asf-stm-margin-bottom"><option value="SORT" ${globalSettings.order === "SORT" ? 'selected' : ''}>Sorted</option><option value="RANDOM" ${globalSettings.order === "RANDOM" ? 'selected' : ''}>Random</option><option value="AS_IS" ${globalSettings.order === "AS_IS" ? 'selected' : ''}>As is</option></select><a class="tooltip hover_tooltip" data-tooltip-html="<p>Determines which card is added to trade.</p><ul><li><strong>Sorted</strong>: Will sort cards by their IDs before adding to trade. If you make several trade offers with the same card and one of them is accepted, the rest will have message &quot;cards unavilable to trade&quot;.</li><li><strong>Random</strong>: Will add cards to trade randomly. If you make several trade offers and one of them is accepted, only some of them will be unavilable for trade.</li><li><strong>As is</strong>: Script doesn't change anything in order. Results vary depending on browser, steam servers, weather...</li></ul>"><img src="${questionmarkURL}"></a></fieldset><fieldset><legend>AUTO-SEND TRADE OFFER</legend><div class="asf-stm-margin-bottom"><label for="auto-send" class="asf-stm-margin-right">Enable</label><input type="checkbox" id="autoSend" name="auto-send" value="1" ${globalSettings.autoSend ? 'checked' : ''} class="asf-stm-checkbox asf-stm-margin-bottom"><a class="tooltip hover_tooltip" data-tooltip-text="Makes it possible for the script to automatically send trade offers without any action on your side. This is not recommended as you should always check your trade offers, but, well, this is a possible thing. Please note that incomplete trade offers (missing cards, ...) won't be sent automatically even when this parameter is set to true."><img src="${questionmarkURL}"></a></div></fieldset></div></li><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab3" name="asf_stm_tabs"><label for="asf_stm_tab3">Blacklist</label><div id="asf_stm_tab-content3" class="asf_stm_content"><div class="title_text profile_xp_block_remaining"><h1 style="margin: 0.5em;">Ignored SteamIDs</h1><textarea class="asf-stm-textarea" id="blacklist" name="Blacklist" rows="17" cols="63"></textarea></div></div></li><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab4" name="asf_stm_tabs"><label for="asf_stm_tab4">Whitelist</label><div class="asf_stm_content" id="asf_stm_tab-content4"><div class="title_text profile_xp_block_remaining"><h1 style="margin: 0.5em;">Additional SteamIDs to scan</h1><textarea class="asf-stm-textarea" id="whitelist" name="Whitelist" rows="17" cols="63"></textarea></div></div></li><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab5" name="asf_stm_tabs"><label for="asf_stm_tab5">Scan filters</label><div class="asf_stm_content" id="asf_stm_tab-content5"><fieldset><legend>SETTINGS</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Use scan filters</span><input type="checkbox" id="useScanFilters" ${globalSettings.useScanFilters ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Filter badges to cut short the duration of the scan."><img src="${questionmarkURL}"></a><br><span class="asf-stm-margin-right">Auto add new scan filters</span><input type="checkbox" id="autoAddScanFilters" ${globalSettings.autoAddScanFilters ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Add new scan filters from a fresh scan (clear all your filters)."><img src="${questionmarkURL}"></a><br><span class="asf-stm-margin-right">Auto delete old scan filters</span><input type="checkbox" id="autoDeleteScanFilters" ${globalSettings.autoDeleteScanFilters ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Delete scan filters from badges without duplicates."><img src="${questionmarkURL}"></a></div></fieldset><fieldset><legend>MANAGE SCAN FILTERS</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">App Id:</span><input type="number" id="addScanFilterAppId" step="10" required class="asf-stm-input asf-stm-margin-right appid-validity"><button id="addScanFilterButton" class="btn_blue_steamui btn_small asf-stm-margin-right"><span>Add scan filter</span></button><span id="addScanFilterStatus"></span></div><div class="asf-stm-margin-bottom"><button onclick="document.querySelector('#clearScanFilters').style.visibility = 'visible'" class="btn_plum btn_small asf-stm-margin-right"><span>Clear scan filters</span></button><button id="clearScanFilters" class="btn_darkred_white_innerfade btn_small" style="visibility: hidden;"><span>Are you sure?</span></button></div></fieldset><fieldset><legend>FILTERS</legend><div id="asf-stm-filters" style="column-gap: 4px;display: flex;flex-wrap: wrap;justify-content: flex-start;">${scanFiltersTemplate}</div></fieldset></div></li></ul></div>`;
         let templateElement = document.createElement("template");
         templateElement.innerHTML = configDialogTemplate;
         let configDialog = templateElement.content.firstChild;
         configDialog.querySelector("#tradeMessage").value = globalSettings.tradeMessage;
         configDialog.querySelector("#blacklist").value = arrayToText(blacklist);
+        configDialog.querySelector("#whitelist").value = arrayToText(whitelist);
 
         configDialog.querySelector("#addScanFilterButton").addEventListener("click", addScanFilterEventHandler, false);
         configDialog.querySelector("#clearScanFilters").addEventListener("click", clearScanFiltersEventHandler, false);
@@ -739,6 +767,7 @@
                 let filters = Object.fromEntries(Array.from(configDialog.querySelectorAll('input[data-app-id]'), x => [x.dataset.appId, x.checked]));
                 globalSettings.scanFilters.forEach(x => {x.active = filters[String(x.appId)]});
                 blacklist = textToArray(configDialog.querySelector("#blacklist").value);
+                whitelist = textToArray(configDialog.querySelector("#whitelist").value);
                 SaveConfig();
                 resetCacheStats();
             } else {
@@ -760,16 +789,21 @@
     function SaveConfig() {
         localStorage.setItem(`${STORAGE_PREFIX}.Settings`, JSON.stringify(globalSettings));
         localStorage.setItem(`${STORAGE_PREFIX}.Blacklist`, JSON.stringify(blacklist));
+        localStorage.setItem(`${STORAGE_PREFIX}.Whitelist`, JSON.stringify(whitelist));
     }
 
     function LoadConfig() {
         globalSettings = JSON.parse(localStorage.getItem(`${STORAGE_PREFIX}.Settings`));
         blacklist = JSON.parse(localStorage.getItem(`${STORAGE_PREFIX}.Blacklist`));
+        whitelist = JSON.parse(localStorage.getItem(`${STORAGE_PREFIX}.Whitelist`));
         if (globalSettings === null) {
             ResetConfig();
         }
         if (blacklist === null) {
             blacklist = [];
+        }
+        if (!Array.isArray(whitelist)) {
+            whitelist = [];
         }
         Object.keys(defaultSettings).forEach(function (key) {
             if (!Object.prototype.hasOwnProperty.call(globalSettings, key)) {
@@ -1054,7 +1088,7 @@
         const safeAppIdList = appIdList.map((value) => sanitizeAppId(value)).filter(Boolean).join();
         const safeAvatarHash = sanitizeAvatarHash(target.AvatarHash);
         const safeInventoryCount = Number.isFinite(Number(target.TotalInventoryCount)) ? Number(target.TotalInventoryCount) : 0;
-        const safeSourceTypes = target.SourceTypes.filter((value) => value === "asf" || value === "friends").join(',');
+        const safeSourceTypes = target.SourceTypes.filter((value) => value === "asf" || value === "friends" || value === "whitelist").join(',');
         const safeSteamId = sanitizeAppId(target.SteamID);
         const safeBotProfileLink = sanitizeSteamProfilePath(botProfileLink);
         let rowTemplate = `<div id="asfstmbot_${index}" class="badge_row asf-stm-result-row" data-result-index="${index}" data-source-key="${sourceKey}" data-source-hidden="false" data-sources="${safeSourceTypes}" style="order:${index};"><div class="badge_row_inner"><div class="badge_title_row guide_showcase_contributors"><div class="badge_title_stats"><a class="filter_all" target="_blank" rel="noopener noreferrer" style="margin-right: 1em"><div class="btn_darkblue_white_innerfade btn_medium" data-appids="${safeAppIdList}"><span data-appids="${safeAppIdList}">Filter All</span></div></a><a class="full_trade_url" href="${safeTradeUrlFull}" target="_blank" rel="noopener noreferrer"><div class="btn_darkblue_white_innerfade btn_medium"><span>Offer a trade for all</span></div></a></div><div style="float: left;" class=""><div class="user_avatar playerAvatar online"><a target="_blank" rel="noopener noreferrer" href="https://steamcommunity.com/${safeBotProfileLink}"><img src="https://avatars.cloudflare.steamstatic.com/${safeAvatarHash}.jpg" /></a></div></div><div class="badge_title">&nbsp;<a target="_blank" rel="noopener noreferrer" href="https://steamcommunity.com/${safeBotProfileLink}">${sanitizeNickname(target.Nickname)}</a>${sourceBadge}${any}&ensp;<span style="color: #8F98A0;">(${safeInventoryCount} items)</span></div><div class="badge_title_stats"><span style="color:#8F98A0;margin-right:0.75em;">${getSourceLabel(sourceKey)}</span><a id="blacklist_${safeSteamId}" data-tooltip-text="Blacklist this target" class="tooltip hover_tooltip"><img src="https://community.cloudflare.steamstatic.com/public/images/skin_1/iconForumBan.png?v=1"></a></div></div><div class="badge_title_rule"></div>${matches}</div></div>`;
@@ -2062,7 +2096,7 @@
         if (enabledSources.scanFriends) {
             fetchers.push(fetchFriendTargets());
         }
-        if (fetchers.length === 0) {
+        if (fetchers.length === 0 && whitelist.length === 0) {
             enableButton();
             document.getElementById("asf_stm_button_div").setAttribute("title", "Enable at least one source");
             return;
@@ -2080,8 +2114,8 @@
                 Success: true,
                 cacheTime: Date.now(),
                 partialFailure: partialFailure,
-                sourceState: enabledSources,
-                Result: mergeTargets(successfulResults),
+                sourceState: {...enabledSources, whitelist: whitelist.join(",")},
+                Result: mergeTargets(successfulResults.concat([whitelist.map(normalizeWhitelistSteamID)])),
             };
             try {
                 localStorage.setItem(`${STORAGE_PREFIX}.BotCache`, JSON.stringify(bots));
