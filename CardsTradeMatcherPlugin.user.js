@@ -95,6 +95,7 @@
     let inventoryCacheGeneration = 0;
     let scanGeneration = 0;
     let adaptiveRequestDelay = null;
+    let lastAdaptiveDecayAt = 0;
     let cardNames = new Set();
     let tradeParams = {
         matches: {},
@@ -441,6 +442,7 @@
 
     function resetAdaptiveRequestDelay() {
         adaptiveRequestDelay = globalSettings.weblimiter;
+        lastAdaptiveDecayAt = 0;
     }
 
     function getAdaptiveRequestDelay() {
@@ -451,19 +453,31 @@
     }
 
     function recordRequestSuccess() {
+        // With concurrency > 1 several requests can succeed within the same scheduling
+        // round; only ease the delay down once per elapsed round (gated by wall-clock time)
+        // so the decay doesn't compound N times per round.
+        const now = Date.now();
+        if (now - lastAdaptiveDecayAt < getAdaptiveRequestDelay()) {
+            return;
+        }
+        lastAdaptiveDecayAt = now;
         const floor = getAdaptiveDelayFloor();
         adaptiveRequestDelay = Math.max(floor, Math.round(getAdaptiveRequestDelay() * 0.8));
     }
 
     function recordRequestError() {
         adaptiveRequestDelay = globalSettings.weblimiter;
+        lastAdaptiveDecayAt = 0;
     }
 
-    // Runs a bounded number of `worker(index)` calls concurrently over indices [0, total),
-    // pacing new dispatches with the adaptive request delay. `worker` must resolve when the
-    // item is fully handled (including its own retries) or reject to abort the whole pool.
+    // Runs a bounded number of `worker(index, cancelToken)` calls concurrently over indices
+    // [0, total), pacing new dispatches with the adaptive request delay. `worker` must resolve
+    // when the item is fully handled (including its own retries) or reject to abort the whole
+    // pool. `cancelToken.cancelled` is set as soon as the pool settles (success or failure) so
+    // any still-in-flight worker can detect it and avoid mutating shared state afterwards.
     function runIndexedWorkerPool(total, concurrency, worker) {
         return new Promise((resolve, reject) => {
+            const cancelToken = {cancelled: false};
             if (total <= 0) {
                 resolve();
                 return;
@@ -476,6 +490,7 @@
                     return;
                 }
                 settled = true;
+                cancelToken.cancelled = true;
                 fn(arg);
             }
             function launchNext() {
@@ -486,6 +501,9 @@
                     settleOnce(reject, {type: 'stopped'});
                     return;
                 }
+                if (active >= concurrency) {
+                    return;
+                }
                 if (nextIndex >= total) {
                     if (active === 0) {
                         settleOnce(resolve);
@@ -494,7 +512,7 @@
                 }
                 const currentIndex = nextIndex++;
                 active++;
-                worker(currentIndex)
+                worker(currentIndex, cancelToken)
                     .then(() => {
                         active--;
                         if (settled) {
@@ -509,7 +527,7 @@
             }
             const initialWorkers = Math.min(Math.max(concurrency, 1), total);
             for (let i = 0; i < initialWorkers; i++) {
-                launchNext();
+                setTimeout(launchNext, i * getAdaptiveRequestDelay());
             }
         });
     }
@@ -1664,22 +1682,23 @@
         }
     }
 
-    function fetchOwnBadgeWithRetry(index, invalidIndices) {
+    function fetchOwnBadgeWithRetry(badges, index, invalidIndices, cancelToken) {
         return new Promise((resolve, reject) => {
+            let localErrors = 0;
             function attempt() {
-                if (stop) {
+                if (stop || cancelToken.cancelled) {
                     reject({type: 'stopped'});
                     return;
                 }
                 updateProgress('badges');
 
-                let url = "https://steamcommunity.com/" + myProfileLink + "/ajaxgetbadgeinfo/" + myBadges[index].appId;
+                let url = "https://steamcommunity.com/" + myProfileLink + "/ajaxgetbadgeinfo/" + badges[index].appId;
                 let xhr = new XMLHttpRequest();
                 xhr.open("GET", url, true);
                 xhr.responseType = "json";
                 // eslint-disable-next-line
                 xhr.onload = function () {
-                    if (stop) {
+                    if (stop || cancelToken.cancelled) {
                         reject({type: 'stopped'});
                         return;
                     }
@@ -1695,10 +1714,9 @@
                             }
                             if (xhr.response != undefined && xhr.response.eresult == 1) {
                                 if (xhr.response.badgedata.rgCards.length >= 5) {
-                                    errors = 0;
                                     recordRequestSuccess();
-                                    myBadges[index].maxCards = xhr.response.badgedata.rgCards.length;
-                                    for (let i = 0; i < myBadges[index].maxCards; i++) {
+                                    badges[index].maxCards = xhr.response.badgedata.rgCards.length;
+                                    for (let i = 0; i < badges[index].maxCards; i++) {
                                         let newcard = {
                                             item: xhr.response.badgedata.rgCards[i].title,
                                             hash: xhr.response.badgedata.rgCards[i].markethash,
@@ -1706,41 +1724,41 @@
                                             iconUrl: xhr.response.badgedata.rgCards[i].imgurl,
                                             number: i,
                                         };
-                                        myBadges[index].cards.push(newcard);
+                                        badges[index].cards.push(newcard);
                                         cardNames.add(xhr.response.badgedata.rgCards[i].markethash);
                                     }
                                     resolve();
                                     return;
                                 } else {
-                                    errors++;
+                                    localErrors++;
                                 }
                             } else {
-                                reject({type: 'fatal', message: `Badge data fetch error: ${myBadges[index].appId}`});
+                                reject({type: 'fatal', message: `Badge data fetch error: ${badges[index].appId}`});
                                 return;
                             }
                         } catch (error) {
-                            errors++;
+                            localErrors++;
                         }
                     } else {
-                        errors++;
+                        localErrors++;
                     }
                     recordRequestError();
-                    if ((status < 400 || status >= 500) && errors <= globalSettings.maxErrors) {
-                        setTimeout(attempt, globalSettings.weblimiter + globalSettings.errorLimiter * errors);
+                    if ((status < 400 || status >= 500) && localErrors <= globalSettings.maxErrors) {
+                        setTimeout(attempt, globalSettings.weblimiter + globalSettings.errorLimiter * localErrors);
                     } else {
                         reject({type: 'fatal', message: `Error getting badge data: ${status}`});
                     }
                 };
                 // eslint-disable-next-line
                 xhr.onerror = function () {
-                    if (stop) {
+                    if (stop || cancelToken.cancelled) {
                         reject({type: 'stopped'});
                         return;
                     }
-                    errors++;
+                    localErrors++;
                     recordRequestError();
-                    if (errors <= globalSettings.maxErrors) {
-                        setTimeout(attempt, globalSettings.weblimiter + globalSettings.errorLimiter * errors);
+                    if (localErrors <= globalSettings.maxErrors) {
+                        setTimeout(attempt, globalSettings.weblimiter + globalSettings.errorLimiter * localErrors);
                     } else {
                         reject({type: 'fatal', message: 'Max error rate reached'});
                     }
@@ -1772,20 +1790,21 @@
                 return;
             }
 
+            const badges = myBadges;
             const invalidIndices = new Set();
-            runIndexedWorkerPool(myBadges.length, getScanConcurrency(), (i) => fetchOwnBadgeWithRetry(i, invalidIndices))
+            runIndexedWorkerPool(badges.length, getScanConcurrency(), (i, cancelToken) => fetchOwnBadgeWithRetry(badges, i, invalidIndices, cancelToken))
                 .then(() => {
                     Array.from(invalidIndices).sort((a, b) => b - a).forEach((invalidIndex) => {
-                        myBadges.splice(invalidIndex, 1);
+                        badges.splice(invalidIndex, 1);
                     });
-                    const finalCacheMeta = buildInventoryCacheMeta("self", myProfileLink, "self", myBadges);
+                    const finalCacheMeta = buildInventoryCacheMeta("self", myProfileLink, "self", badges);
                     setInventoryCacheEntry(buildInventoryCacheKey(finalCacheMeta.entryType, finalCacheMeta.profileId, finalCacheMeta.sourceType, finalCacheMeta.scopeKey), {
                         entryType: finalCacheMeta.entryType,
                         sourceType: finalCacheMeta.sourceType,
                         profileId: finalCacheMeta.profileId,
                         scopeKey: finalCacheMeta.scopeKey,
                         appIds: finalCacheMeta.appIds,
-                        badges: myBadges,
+                        badges: badges,
                     });
                     finalizeOwnInventoryAfterLoad();
                 })
@@ -1799,23 +1818,24 @@
         }
     }
 
-    function fetchTargetBadgeWithRetry(index, target, idLinkRef) {
+    function fetchTargetBadgeWithRetry(badges, index, target, idLinkRef, cancelToken) {
         return new Promise((resolve, reject) => {
+            let localErrors = 0;
             function attempt() {
-                if (stop) {
+                if (stop || cancelToken.cancelled) {
                     reject({type: 'stopped'});
                     return;
                 }
                 let profileLink = getTargetProfileLink(target);
                 updateProgress('botBadges');
 
-                let url = `https://steamcommunity.com/${idLinkRef.value ?? profileLink}/gamecards/${botBadges[index].appId}`;
+                let url = `https://steamcommunity.com/${idLinkRef.value ?? profileLink}/gamecards/${badges[index].appId}`;
                 let xhr = new XMLHttpRequest();
                 xhr.open("GET", url, true);
                 xhr.responseType = "document";
                 // eslint-disable-next-line
                 xhr.onload = function () {
-                    if (stop) {
+                    if (stop || cancelToken.cancelled) {
                         reject({type: 'stopped'});
                         return;
                     }
@@ -1827,9 +1847,8 @@
                         }
                         let badgeCards = xhr.response.documentElement.querySelectorAll(".badge_card_set_card");
                         if (badgeCards.length >= 5) {
-                            errors = 0;
                             recordRequestSuccess();
-                            botBadges[index].maxCards = badgeCards.length;
+                            badges[index].maxCards = badgeCards.length;
                             for (let i = 0; i < badgeCards.length; i++) {
                                 let quantityElement = badgeCards[i].querySelector(".badge_card_set_text_qty");
                                 let quantity = quantityElement === null ? "(0)" : quantityElement.innerText.trim();
@@ -1850,7 +1869,7 @@
                                     iconUrl: icon,
                                     number: i,
                                 };
-                                botBadges[index].cards.push(newcard);
+                                badges[index].cards.push(newcard);
                             }
 
                             if (idLinkRef.value === undefined) {
@@ -1861,28 +1880,28 @@
                             return;
                         } else {
                             // private inventory?
-                            errors++;
+                            localErrors++;
                         }
                     } else {
-                        errors++;
+                        localErrors++;
                     }
                     recordRequestError();
-                    if ((status < 400 || status >= 500) && errors <= globalSettings.maxErrors) {
-                        setTimeout(attempt, globalSettings.weblimiter + globalSettings.errorLimiter * errors);
+                    if ((status < 400 || status >= 500) && localErrors <= globalSettings.maxErrors) {
+                        setTimeout(attempt, globalSettings.weblimiter + globalSettings.errorLimiter * localErrors);
                     } else {
                         reject({type: 'fatal', message: `Error getting badge data: ${status}`});
                     }
                 };
                 // eslint-disable-next-line
                 xhr.onerror = function () {
-                    if (stop) {
+                    if (stop || cancelToken.cancelled) {
                         reject({type: 'stopped'});
                         return;
                     }
-                    errors++;
+                    localErrors++;
                     recordRequestError();
-                    if (errors <= globalSettings.maxErrors) {
-                        setTimeout(attempt, globalSettings.weblimiter + globalSettings.errorLimiter * errors);
+                    if (localErrors <= globalSettings.maxErrors) {
+                        setTimeout(attempt, globalSettings.weblimiter + globalSettings.errorLimiter * localErrors);
                     } else {
                         reject({type: 'fatal', message: 'Max error rate reached'});
                     }
@@ -1895,17 +1914,18 @@
 
     function scanTargetBadges(userindex) {
         const target = bots.Result[userindex];
+        const badges = botBadges;
         const idLinkRef = {value: undefined};
-        runIndexedWorkerPool(botBadges.length, getScanConcurrency(), (i) => fetchTargetBadgeWithRetry(i, target, idLinkRef))
+        runIndexedWorkerPool(badges.length, getScanConcurrency(), (i, cancelToken) => fetchTargetBadgeWithRetry(badges, i, target, idLinkRef, cancelToken))
             .then(() => {
-                const cacheMeta = buildInventoryCacheMeta("target", target.SteamID, getTargetInventorySourceType(target), botBadges);
+                const cacheMeta = buildInventoryCacheMeta("target", target.SteamID, getTargetInventorySourceType(target), badges);
                 setInventoryCacheEntry(buildInventoryCacheKey(cacheMeta.entryType, cacheMeta.profileId, cacheMeta.sourceType, cacheMeta.scopeKey), {
                     entryType: cacheMeta.entryType,
                     sourceType: cacheMeta.sourceType,
                     profileId: cacheMeta.profileId,
                     scopeKey: cacheMeta.scopeKey,
                     appIds: cacheMeta.appIds,
-                    badges: botBadges,
+                    badges: badges,
                 });
                 finalizeTargetInventoryAfterLoad(userindex);
             })
@@ -1925,7 +1945,7 @@
                                 GetCards(0, userindex);
                             };
                         })(userindex + 1),
-                        globalSettings.weblimiter + globalSettings.errorLimiter * errors,
+                        globalSettings.weblimiter,
                     );
                     return;
                 }
