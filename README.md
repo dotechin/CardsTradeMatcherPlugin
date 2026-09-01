@@ -32,6 +32,7 @@ A userscript that matches Steam Trading Cards with ASF bots and Steam friends.
 - Foil badge matching
 - Profile backgrounds
 - Emoticons
+- Make the Inventory scanning in the Bot's background operations
 
 ## Installation
 
