@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-userscript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate userscript exists
+        run: test -f CardsTradeMatcherPlugin.user.js
+
+      - name: Validate userscript metadata block
+        run: |
+          grep -q "@name" CardsTradeMatcherPlugin.user.js
+          grep -q "@version" CardsTradeMatcherPlugin.user.js
