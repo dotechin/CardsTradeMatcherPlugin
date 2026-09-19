@@ -33,7 +33,7 @@ A userscript that matches Steam Trading Cards with ASF bots and Steam friends.
 - Profile backgrounds
 - Emoticons
 - Make the Inventory scanning in the Bot's background operationsù
-- Investigate the doubling of the results
+- Review the trade making logic, filters logic, make duplicate lister tab, make dupes the only tradable items (2 or more)
 
 ## Installation
 
