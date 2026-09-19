@@ -33,7 +33,9 @@ A userscript that matches Steam Trading Cards with ASF bots and Steam friends.
 - Profile backgrounds
 - Emoticons
 - Make the Inventory scanning in the Bot's background operations
-- Review the trade making logic, filters logic, make duplicate lister tab, make dupes the only tradable items (2 or more)
+- Review the trade making logic, make duplicate lister tab,
+- Make 2 or more dupes the only tradable items (showing dupes only and number of owned cards)
+- Filters duplicates entries instead of updating them
 
 ## Installation
 
