@@ -237,7 +237,7 @@
             badge.cards.forEach((card) => {
                 const consumed = consumption.get(card.hash) || 0;
                 if (consumed > 0) {
-                    card.count = Math.max(1, card.count - consumed);
+                    card.count = Math.max(0, card.count - consumed);
                 }
             });
             badge.cards.sort((a, b) => b.count - a.count);
@@ -578,48 +578,51 @@
         const terminalStates = new Set(["accepted", "declined", "cancelled", "expired", "countered"]);
         let completedNow = 0;
 
-        const refreshPromises = pendingTrades.map((trade) => new Promise((resolve) => {
-            requestFunc({
-                method: "GET",
-                url: `https://steamcommunity.com/tradeoffer/${encodeURIComponent(trade.offerId)}/`,
-                headers: {
-                    "User-Agent": "ASF-STM/" + GM_info.version,
-                },
-                onload: function (response) {
-                    if (response.status !== 200) {
-                        resolve();
-                        return;
-                    }
-                    try {
-                        const parser = new DOMParser();
-                        const tradeDocument = parser.parseFromString(response.responseText ?? response.response, "text/html");
-                        const tradeState = parseTradeOfferState(tradeDocument);
-                        if (tradeState === "accepted") {
-                            completedStore.trades[String(trade.offerId)] = {
-                                ...trade,
-                                state: tradeState,
-                                completedAt: Date.now(),
-                            };
-                            delete pendingStore.trades[String(trade.offerId)];
-                            completedNow++;
-                        } else if (terminalStates.has(tradeState)) {
-                            delete pendingStore.trades[String(trade.offerId)];
+        let refreshChain = Promise.resolve();
+        pendingTrades.forEach((trade) => {
+            refreshChain = refreshChain.then(() => new Promise((resolve) => {
+                requestFunc({
+                    method: "GET",
+                    url: `https://steamcommunity.com/tradeoffer/${encodeURIComponent(trade.offerId)}/`,
+                    headers: {
+                        "User-Agent": "ASF-STM/" + GM_info.version,
+                    },
+                    onload: function (response) {
+                        if (response.status !== 200) {
+                            resolve();
+                            return;
                         }
-                    } catch (error) {
-                        console.warn("Failed to parse trade offer page", error);
+                        try {
+                            const parser = new DOMParser();
+                            const tradeDocument = parser.parseFromString(response.responseText ?? response.response, "text/html");
+                            const tradeState = parseTradeOfferState(tradeDocument);
+                            if (tradeState === "accepted") {
+                                completedStore.trades[String(trade.offerId)] = {
+                                    ...trade,
+                                    state: tradeState,
+                                    completedAt: Date.now(),
+                                };
+                                delete pendingStore.trades[String(trade.offerId)];
+                                completedNow++;
+                            } else if (terminalStates.has(tradeState)) {
+                                delete pendingStore.trades[String(trade.offerId)];
+                            }
+                        } catch (error) {
+                            console.warn("Failed to parse trade offer page", error);
+                        }
+                        resolve();
+                    },
+                    onerror: function () {
+                        resolve();
+                    },
+                    ontimeout: function () {
+                        resolve();
                     }
-                    resolve();
-                },
-                onerror: function () {
-                    resolve();
-                },
-                ontimeout: function () {
-                    resolve();
-                }
-            });
-        }));
+                });
+            }));
+        });
 
-        return Promise.all(refreshPromises)
+        return refreshChain
             .then(() => {
                 savePendingTradeStore(pendingStore);
                 saveCompletedTradeStore(completedStore);
