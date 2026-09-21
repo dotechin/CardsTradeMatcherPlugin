@@ -257,24 +257,29 @@
     }
 
     function parseTradeOfferState(documentElement) {
-        const bodyText = String(documentElement?.body?.textContent ?? "").replace(/\s+/g, " ").toLowerCase();
-        if (bodyText.includes("trade offer accepted") || bodyText.includes("accepted this trade offer") || bodyText.includes("trade completed")) {
-            return "accepted";
-        }
-        if (bodyText.includes("trade offer declined") || bodyText.includes("declined this trade offer")) {
-            return "declined";
-        }
-        if (bodyText.includes("trade offer canceled") || bodyText.includes("trade offer cancelled") || bodyText.includes("cancelled this trade offer") || bodyText.includes("canceled this trade offer")) {
-            return "cancelled";
-        }
-        if (bodyText.includes("trade offer expired") || bodyText.includes("expired this trade offer")) {
-            return "expired";
-        }
-        if (bodyText.includes("trade offer countered") || bodyText.includes("countered this trade offer")) {
-            return "countered";
-        }
-        if (bodyText.includes("trade offer") && bodyText.includes("sent")) {
-            return "pending";
+        const stateFromDataset = documentElement?.querySelector?.("[data-offer-state]")?.dataset?.offerState;
+        const html = String(documentElement?.documentElement?.innerHTML ?? "");
+        const stateMatch = stateFromDataset || html.match(/g_tradeOfferState\s*=\s*(\d+)/)?.[1] || html.match(/data-offer-state="(\d+)"/)?.[1];
+        const state = Number(stateMatch);
+        switch (state) {
+            case 2:
+            case 9:
+            case 11:
+                return "pending";
+            case 3:
+                return "accepted";
+            case 4:
+                return "countered";
+            case 5:
+                return "expired";
+            case 6:
+            case 10:
+                return "cancelled";
+            case 7:
+            case 8:
+                return "declined";
+            default:
+                break;
         }
         return "unknown";
     }
