@@ -11,7 +11,7 @@
 // @match           *://steamcommunity.com/profiles/*/badges
 // @match           *://steamcommunity.com/profiles/*/badges/
 // @match           *://steamcommunity.com/tradeoffer/new/*
-// @version         6.3.0.0
+// @version         6.4.0.0
 // @homepageURL     https://github.com/dotechin/CardsTradeMatcherPlugin
 // @supportURL      https://github.com/dotechin/CardsTradeMatcherPlugin/issues
 // @downloadURL     https://raw.githubusercontent.com/dotechin/CardsTradeMatcherPlugin/main/CardsTradeMatcherPlugin.user.js
@@ -46,6 +46,11 @@
     const STORAGE_PREFIX = "TempAsfStm.ASF.STM.Unified";
     const CACHE_SCHEMA_VERSION = 1;
     const INVENTORY_CACHE_KEY = `${STORAGE_PREFIX}.InventoryCache.v${CACHE_SCHEMA_VERSION}`;
+    const PENDING_TRADE_STORE_VERSION = 1;
+    const COMPLETED_TRADE_STORE_VERSION = 1;
+    const PENDING_TRADE_KEY = `${STORAGE_PREFIX}.PendingTrades.v${PENDING_TRADE_STORE_VERSION}`;
+    const COMPLETED_TRADE_KEY = `${STORAGE_PREFIX}.CompletedTrades.v${COMPLETED_TRADE_STORE_VERSION}`;
+    const STM_TRADE_MARKER_PREFIX = "ASFSTM";
     const INVENTORY_CACHE_DEFAULT_MAX_ENTRIES = 1500;
     let defaultSettings = {
         scanBots: true,
@@ -96,6 +101,9 @@
     let scanGeneration = 0;
     let adaptiveRequestDelay = null;
     let lastAdaptiveDecayAt = 0;
+    let pendingTradeStore = null;
+    let completedTradeStore = null;
+    let tradeRefreshInFlight = false;
     let cardNames = new Set();
     let tradeParams = {
         matches: {},
@@ -119,6 +127,152 @@
 
     function deepClone(object) {
         return JSON.parse(JSON.stringify(object));
+    }
+
+    function getRequestFunc() {
+        if (typeof GM_xmlhttpRequest !== "function") {
+            return GM.xmlHttpRequest.bind(GM);
+        }
+        return GM_xmlhttpRequest;
+    }
+
+    function buildEmptyTradeStore(version) {
+        return {
+            version: version,
+            updatedAt: 0,
+            trades: {},
+        };
+    }
+
+    function loadTradeStore(storageKey, version) {
+        try {
+            const parsed = JSON.parse(localStorage.getItem(storageKey));
+            if (parsed && parsed.version === version && parsed.trades && typeof parsed.trades === "object") {
+                return parsed;
+            }
+        } catch (error) {
+            console.warn(`Failed to parse ${storageKey}`, error);
+        }
+        return buildEmptyTradeStore(version);
+    }
+
+    function saveTradeStore(storageKey, store) {
+        store.updatedAt = Date.now();
+        localStorage.setItem(storageKey, JSON.stringify(store));
+    }
+
+    function getPendingTradeStore() {
+        pendingTradeStore = loadTradeStore(PENDING_TRADE_KEY, PENDING_TRADE_STORE_VERSION);
+        return pendingTradeStore;
+    }
+
+    function getCompletedTradeStore() {
+        completedTradeStore = loadTradeStore(COMPLETED_TRADE_KEY, COMPLETED_TRADE_STORE_VERSION);
+        return completedTradeStore;
+    }
+
+    function savePendingTradeStore(store) {
+        pendingTradeStore = store;
+        saveTradeStore(PENDING_TRADE_KEY, store);
+    }
+
+    function saveCompletedTradeStore(store) {
+        completedTradeStore = store;
+        saveTradeStore(COMPLETED_TRADE_KEY, store);
+    }
+
+    function clearTradeTrackingStores() {
+        localStorage.removeItem(PENDING_TRADE_KEY);
+        localStorage.removeItem(COMPLETED_TRADE_KEY);
+        pendingTradeStore = null;
+        completedTradeStore = null;
+    }
+
+    function getTrackedTradeCounts() {
+        return {
+            pending: Object.keys(getPendingTradeStore().trades).length,
+            completed: Object.keys(getCompletedTradeStore().trades).length,
+        };
+    }
+
+    function createTradeMarker() {
+        return `${STM_TRADE_MARKER_PREFIX}:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    }
+
+    function buildTrackedTradeMessage(message, marker) {
+        const trimmedMessage = String(message ?? "").trim();
+        const markerText = `[${marker}]`;
+        return trimmedMessage ? `${trimmedMessage}\n${markerText}` : markerText;
+    }
+
+    function updateTradeStatus(message, isError = false) {
+        const statusElement = document.querySelector("[data-asf-stm-trade-status]");
+        if (!statusElement) {
+            return;
+        }
+        const counts = getTrackedTradeCounts();
+        const parts = [`Pending: ${counts.pending}`, `Completed: ${counts.completed}`];
+        if (message) {
+            parts.push(message);
+        }
+        statusElement.textContent = parts.join(" | ");
+        statusElement.style.color = isError ? "#ff7b72" : "#8F98A0";
+    }
+
+    function getCompletedTradeConsumption() {
+        const completedTrades = Object.values(getCompletedTradeStore().trades);
+        const consumption = new Map();
+        completedTrades.forEach((trade) => {
+            (trade.sendCardNames || []).forEach((hash) => {
+                consumption.set(hash, (consumption.get(hash) || 0) + 1);
+            });
+        });
+        return consumption;
+    }
+
+    function getReconciledMyBadges() {
+        const consumption = getCompletedTradeConsumption();
+        const reconciledBadges = deepClone(myBadges);
+        reconciledBadges.forEach((badge) => {
+            badge.cards.forEach((card) => {
+                const consumed = consumption.get(card.hash) || 0;
+                if (consumed > 0) {
+                    card.count = Math.max(1, card.count - consumed);
+                }
+            });
+            badge.cards.sort((a, b) => b.count - a.count);
+            badge.unmatchable = badge.cards[0].count - badge.cards[badge.cards.length - 1].count < 2;
+            let totalCards = 0;
+            for (let i = 0; i < badge.cards.length; i++) {
+                totalCards += badge.cards[i].count;
+            }
+            badge.maxSets = Math.floor(totalCards / badge.maxCards);
+            badge.lastSet = Math.ceil(totalCards / badge.maxCards);
+        });
+        return reconciledBadges;
+    }
+
+    function parseTradeOfferState(documentElement) {
+        const bodyText = String(documentElement?.body?.textContent ?? "").replace(/\s+/g, " ").toLowerCase();
+        if (bodyText.includes("trade offer accepted") || bodyText.includes("accepted this trade offer") || bodyText.includes("trade completed")) {
+            return "accepted";
+        }
+        if (bodyText.includes("trade offer declined") || bodyText.includes("declined this trade offer")) {
+            return "declined";
+        }
+        if (bodyText.includes("trade offer canceled") || bodyText.includes("trade offer cancelled") || bodyText.includes("cancelled this trade offer") || bodyText.includes("canceled this trade offer")) {
+            return "cancelled";
+        }
+        if (bodyText.includes("trade offer expired") || bodyText.includes("expired this trade offer")) {
+            return "expired";
+        }
+        if (bodyText.includes("trade offer countered") || bodyText.includes("countered this trade offer")) {
+            return "countered";
+        }
+        if (bodyText.includes("trade offer") && bodyText.includes("sent")) {
+            return "pending";
+        }
+        return "unknown";
     }
 
     function getPartner(str) {
@@ -380,11 +534,19 @@
     }
 
     function resultControlEventHandler(event) {
-        const control = event.target.closest("[data-result-filter],[data-result-grouping]");
+        const control = event.target.closest("[data-result-filter],[data-result-grouping],[data-trade-action]");
         if (!control) {
             return;
         }
         event.preventDefault();
+        if (control.dataset.tradeAction) {
+            if (control.dataset.tradeAction === "refresh-completed") {
+                refreshCompletedTrades();
+            } else if (control.dataset.tradeAction === "clear-tracked") {
+                clearTrackedTradesEventHandler();
+            }
+            return;
+        }
         if (control.dataset.resultFilter) {
             resultView.sourceFilter = control.dataset.resultFilter;
         }
@@ -392,6 +554,96 @@
             resultView.grouping = control.dataset.resultGrouping;
         }
         applyResultView();
+    }
+
+    function refreshCompletedTrades(options = {}) {
+        if (tradeRefreshInFlight) {
+            updateTradeStatus("Refresh already running");
+            return Promise.resolve();
+        }
+        const pendingStore = deepClone(getPendingTradeStore());
+        const pendingTrades = Object.values(pendingStore.trades);
+        if (pendingTrades.length === 0) {
+            updateTradeStatus("No pending STM trades");
+            if (options.render !== false) {
+                renderStoredMatches();
+            }
+            return Promise.resolve();
+        }
+
+        tradeRefreshInFlight = true;
+        updateTradeStatus(`Refreshing ${pendingTrades.length} trade(s)…`);
+        const requestFunc = getRequestFunc();
+        const completedStore = deepClone(getCompletedTradeStore());
+        const terminalStates = new Set(["accepted", "declined", "cancelled", "expired", "countered"]);
+        let completedNow = 0;
+
+        const refreshPromises = pendingTrades.map((trade) => new Promise((resolve) => {
+            requestFunc({
+                method: "GET",
+                url: `https://steamcommunity.com/tradeoffer/${encodeURIComponent(trade.offerId)}/`,
+                headers: {
+                    "User-Agent": "ASF-STM/" + GM_info.version,
+                },
+                onload: function (response) {
+                    if (response.status !== 200) {
+                        resolve();
+                        return;
+                    }
+                    try {
+                        const parser = new DOMParser();
+                        const tradeDocument = parser.parseFromString(response.responseText ?? response.response, "text/html");
+                        const tradeState = parseTradeOfferState(tradeDocument);
+                        if (tradeState === "accepted") {
+                            completedStore.trades[String(trade.offerId)] = {
+                                ...trade,
+                                state: tradeState,
+                                completedAt: Date.now(),
+                            };
+                            delete pendingStore.trades[String(trade.offerId)];
+                            completedNow++;
+                        } else if (terminalStates.has(tradeState)) {
+                            delete pendingStore.trades[String(trade.offerId)];
+                        }
+                    } catch (error) {
+                        console.warn("Failed to parse trade offer page", error);
+                    }
+                    resolve();
+                },
+                onerror: function () {
+                    resolve();
+                },
+                ontimeout: function () {
+                    resolve();
+                }
+            });
+        }));
+
+        return Promise.all(refreshPromises)
+            .then(() => {
+                savePendingTradeStore(pendingStore);
+                saveCompletedTradeStore(completedStore);
+                if (options.render !== false) {
+                    renderStoredMatches();
+                } else {
+                    updateTradeStatus(completedNow > 0 ? `Completed +${completedNow}` : "No completed trades found");
+                }
+            })
+            .catch((error) => {
+                console.warn("Failed to refresh completed trades", error);
+                updateTradeStatus("Refresh failed", true);
+            })
+            .finally(() => {
+                tradeRefreshInFlight = false;
+            });
+    }
+
+    function clearTrackedTradesEventHandler() {
+        unsafeWindow.ShowConfirmDialog("CONFIRMATION", "Are you sure you want to clear tracked STM trades?").done(function () {
+            clearTradeTrackingStores();
+            renderStoredMatches();
+            updateTradeStatus("Tracked STM trades cleared");
+        });
     }
 
     function isCacheValid(cache, enabledSources) {
@@ -1051,6 +1303,7 @@
 
     function finalizeTargetInventoryAfterLoad(userindex) {
         finalizeBadgeCollection(botBadges, false);
+        bots.Result[userindex].badgesSnapshot = deepClone(botBadges);
         compareCards(userindex, function () {
             setTimeout(
                 (function (userindex) {
@@ -1582,15 +1835,17 @@
         updateResultSummary();
     }
 
-    function compareCards(index, callback) {
+    function buildMatchesForTarget(index, availableMyBadges, targetBadges) {
         let itemsToSend = [];
         let itemsToReceive = [];
 
-
-        for (let i = 0; i < botBadges.length; i++) {
-            let myBadge = deepClone(myBadges[i]);
-            let theirBadge = deepClone(botBadges[i]);
-            const originalCardsByNumber = new Map(myBadges[i].cards.map((card) => [card.number, card]));
+        for (let i = 0; i < targetBadges.length; i++) {
+            if (!availableMyBadges[i] || availableMyBadges[i].unmatchable || !targetBadges[i] || !Array.isArray(targetBadges[i].cards) || targetBadges[i].cards.length === 0) {
+                continue;
+            }
+            let myBadge = deepClone(availableMyBadges[i]);
+            let theirBadge = deepClone(targetBadges[i]);
+            const originalCardsByNumber = new Map(availableMyBadges[i].cards.map((card) => [card.number, card]));
             let myState = calcState(myBadge);
             while (myState < 2) {
                 let foundMatch = false;
@@ -1690,6 +1945,17 @@
             }
         }
 
+        return { itemsToSend: itemsToSend, itemsToReceive: itemsToReceive };
+    }
+
+    function compareCards(index, callback) {
+        const target = bots.Result[index];
+        const targetBadges = Array.isArray(target.badgesSnapshot) ? target.badgesSnapshot : botBadges;
+        const availableMyBadges = getReconciledMyBadges();
+        const computedMatches = buildMatchesForTarget(index, availableMyBadges, targetBadges);
+        let itemsToSend = computedMatches.itemsToSend;
+        let itemsToReceive = computedMatches.itemsToReceive;
+
         bots.Result[index].itemsToSend = itemsToSend;
         bots.Result[index].itemsToReceive = itemsToReceive;
         if (itemsToSend.length > 0) {
@@ -1699,6 +1965,44 @@
         } else {
             callback();
         }
+    }
+
+    function resetRenderedMatches() {
+        const resultsBody = document.getElementById("asf_stm_results_body");
+        const filtersBody = document.getElementById("asf_stm_filters_body");
+        if (resultsBody) {
+            resultsBody.innerHTML = "";
+        }
+        if (filtersBody) {
+            filtersBody.innerHTML = `<span id="asf_stm_placeholder" style="margin-right: 15px;">No matches to filter</span>`;
+        }
+        tradeParams.matches = {};
+        tradeParams.filter = [];
+        SaveParams();
+        updateResultSummary();
+    }
+
+    function renderStoredMatches() {
+        if (!bots?.Result || !document.getElementById("asf_stm_results_body")) {
+            return;
+        }
+        resetRenderedMatches();
+        const availableMyBadges = getReconciledMyBadges();
+        for (let i = 0; i < bots.Result.length; i++) {
+            const targetBadges = bots.Result[i].badgesSnapshot;
+            if (!Array.isArray(targetBadges) || targetBadges.length !== availableMyBadges.length) {
+                continue;
+            }
+            const computedMatches = buildMatchesForTarget(i, availableMyBadges, targetBadges);
+            bots.Result[i].itemsToSend = computedMatches.itemsToSend;
+            bots.Result[i].itemsToReceive = computedMatches.itemsToReceive;
+            if (computedMatches.itemsToSend.length > 0) {
+                storeMatches(bots.Result[i].TradePartner, computedMatches.itemsToSend, computedMatches.itemsToReceive);
+                addMatchRow(i);
+            }
+        }
+        applyResultView();
+        updateTradeStatus();
     }
 
     function fetchOwnBadgeWithRetry(badges, index, invalidIndices, cancelToken) {
@@ -2337,7 +2641,7 @@
         mainContentDiv.textContent = "";
         mainContentDiv.style.width = "90%";
         const partialSourceWarning = bots.partialFailure ? `<div style="color:#e5c07b;text-align:center;margin-bottom:0.75rem;">Warning: one or more enabled sources could not be fetched; results may be partial.</div>` : "";
-        mainContentDiv.innerHTML = `<div class="profile_badges_header"><div id="throbber"><div class="LoadingWrapper"><div class="LoadingThrobber"><div class="Bar Bar1"></div><div class="Bar Bar2"></div><div class="Bar Bar3"></div></div></div></div><div style="display: flex;flex-direction: column;align-items: center;">${partialSourceWarning}<div class="progress-container"><div class="progress-step"><div id="scan-pages-radial" class="radial-progress" style="--progress: 0deg;"><div id="scan-pages-text" class="progress-inner">?</div></div><span id="scan-pages-label" class="label">${globalSettings.useScanFilters && globalSettings.scanFilters.filter(x => x.active).length ? 'Filters' : 'Badge Pages'}</span></div><div class="progress-step"><div id="scan-badges-radial" class="radial-progress" style="--progress: 0deg;"><div id="scan-badges-text" class="progress-inner">?</div></div><span id="scan-badges-label" class="label">Badges</span></div><div class="progress-step"><div id="scan-bots-radial" class="radial-progress" style="--progress: 0deg;"><div id="scan-bots-text" class="progress-inner">?</div></div><span id="scan-bots-label" class="label">Targets</span></div><div class="progress-step"><div id="bots-badges-radial" class="radial-progress" style="--progress: 0deg;"><div id="bots-badges-text" class="progress-inner">?</div></div><span id="bots-badges-label" class="label">Target Badges</span></div></div></div></div><div id="asf_stm_results_summary" style="margin:1rem 0 0.75rem;text-align:center;color:#c7d5e0;"></div><div id="asf_stm_results_controls" style="display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;justify-content:center;margin-bottom:1rem;"><span style="color:#8F98A0;">Show:</span><a href="#" data-result-filter="all" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">All</a><a href="#" data-result-filter="asf" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">ASF only</a><a href="#" data-result-filter="friends" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">Friends only</a><a href="#" data-result-filter="shared" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">Shared</a><span style="color:#8F98A0;margin-left:0.5rem;">Order:</span><a href="#" data-result-grouping="combined" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">Combined</a><a href="#" data-result-grouping="source" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">By source</a></div><div id="asf_stm_results_body" style="display:flex;flex-direction:column;gap:0.75rem;"></div><div id="asf_stm_filters" style="position: fixed; z-index: 1000; right: 5px; bottom: 45px; transition-duration: 500ms; transition-timing-function: ease; margin-right: -50%; padding: 5px; max-width: 40%; display: inline-block; border-radius: 2px; background:rgba(23,26,33,0.8); color: #67c1f5;"><div style="white-space: nowrap;">Select:<a id="asf_stm_filter_all" class="commentthread_pagelinks">all</a><a id="asf_stm_filter_none" class="commentthread_pagelinks">none</a><a id="asf_stm_filter_invert" class="commentthread_pagelinks">invert</a></div><hr /><div id="asf_stm_filters_body"><span id="asf_stm_placeholder" style="margin-right: 15px;">No matches to filter</span></div></div><div style="position: fixed;z-index: 1000;right: 5px;bottom: 5px;" id="asf_stm_filters_button_div"><a id="asf_stm_filters_button" class="btnv6_blue_hoverfade btn_medium"><span>Filters</span></a></div>`;
+        mainContentDiv.innerHTML = `<div class="profile_badges_header"><div id="throbber"><div class="LoadingWrapper"><div class="LoadingThrobber"><div class="Bar Bar1"></div><div class="Bar Bar2"></div><div class="Bar Bar3"></div></div></div></div><div style="display: flex;flex-direction: column;align-items: center;">${partialSourceWarning}<div class="progress-container"><div class="progress-step"><div id="scan-pages-radial" class="radial-progress" style="--progress: 0deg;"><div id="scan-pages-text" class="progress-inner">?</div></div><span id="scan-pages-label" class="label">${globalSettings.useScanFilters && globalSettings.scanFilters.filter(x => x.active).length ? 'Filters' : 'Badge Pages'}</span></div><div class="progress-step"><div id="scan-badges-radial" class="radial-progress" style="--progress: 0deg;"><div id="scan-badges-text" class="progress-inner">?</div></div><span id="scan-badges-label" class="label">Badges</span></div><div class="progress-step"><div id="scan-bots-radial" class="radial-progress" style="--progress: 0deg;"><div id="scan-bots-text" class="progress-inner">?</div></div><span id="scan-bots-label" class="label">Targets</span></div><div class="progress-step"><div id="bots-badges-radial" class="radial-progress" style="--progress: 0deg;"><div id="bots-badges-text" class="progress-inner">?</div></div><span id="bots-badges-label" class="label">Target Badges</span></div></div></div></div><div id="asf_stm_results_summary" style="margin:1rem 0 0.75rem;text-align:center;color:#c7d5e0;"></div><div id="asf_stm_results_controls" style="display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;justify-content:center;margin-bottom:1rem;"><span style="color:#8F98A0;">Show:</span><a href="#" data-result-filter="all" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">All</a><a href="#" data-result-filter="asf" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">ASF only</a><a href="#" data-result-filter="friends" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">Friends only</a><a href="#" data-result-filter="shared" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">Shared</a><span style="color:#8F98A0;margin-left:0.5rem;">Order:</span><a href="#" data-result-grouping="combined" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">Combined</a><a href="#" data-result-grouping="source" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">By source</a><span style="color:#8F98A0;margin-left:0.5rem;">Trades:</span><a href="#" data-trade-action="refresh-completed" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">Refresh completed</a><a href="#" data-trade-action="clear-tracked" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">Clear tracked</a><span data-asf-stm-trade-status style="color:#8F98A0;margin-left:0.5rem;"></span></div><div id="asf_stm_results_body" style="display:flex;flex-direction:column;gap:0.75rem;"></div><div id="asf_stm_filters" style="position: fixed; z-index: 1000; right: 5px; bottom: 45px; transition-duration: 500ms; transition-timing-function: ease; margin-right: -50%; padding: 5px; max-width: 40%; display: inline-block; border-radius: 2px; background:rgba(23,26,33,0.8); color: #67c1f5;"><div style="white-space: nowrap;">Select:<a id="asf_stm_filter_all" class="commentthread_pagelinks">all</a><a id="asf_stm_filter_none" class="commentthread_pagelinks">none</a><a id="asf_stm_filter_invert" class="commentthread_pagelinks">invert</a></div><hr /><div id="asf_stm_filters_body"><span id="asf_stm_placeholder" style="margin-right: 15px;">No matches to filter</span></div></div><div style="position: fixed;z-index: 1000;right: 5px;bottom: 5px;" id="asf_stm_filters_button_div"><a id="asf_stm_filters_button" class="btnv6_blue_hoverfade btn_medium"><span>Filters</span></a></div>`;
         document.getElementById("asf_stm_filters").style.background = sanitizeFilterBackgroundColor(globalSettings.filterBackgroundColor);
         document.getElementById("asf_stm_filters_body").addEventListener("change", filterEventHandler);
         document.getElementById("asf_stm_filter_all").addEventListener("click", filterSwitchesHandler);
@@ -2363,6 +2667,7 @@
         };
         syncResultControlStates();
         updateResultSummary();
+        updateTradeStatus();
         getBadges(1);
     }
 
@@ -2449,12 +2754,7 @@
 
     function fetchBots() {
         const enabledSources = getEnabledSources();
-        let requestFunc;
-        if (typeof GM_xmlhttpRequest !== "function") {
-            requestFunc = GM.xmlHttpRequest.bind(GM);
-        } else {
-            requestFunc = GM_xmlhttpRequest;
-        }
+        const requestFunc = getRequestFunc();
 
         function fetchAsfTargets() {
             return new Promise((resolve, reject) => {
@@ -2747,18 +3047,34 @@
                 }
             });
             restoreCookie(g_v.oldCookie);
-            // inject some JS to do something after trade offer is sent
-            if (g_s.doAfterTrade !== "NOTHING") {
-                let functionToInject = 'let doAfterTrade = "' + g_s.doAfterTrade + '";';
-                functionToInject += "$J(document).ajaxSuccess(function (event, xhr, settings) {";
-                functionToInject += 'if (settings.url === "https://steamcommunity.com/tradeoffer/new/send") {';
-                functionToInject += 'if (doAfterTrade === "CLOSE_WINDOW") { window.close();';
-                functionToInject += '} else if (doAfterTrade === "CLICK_OK") {';
-                functionToInject += 'document.querySelector("div.newmodal_buttons > div").click(); } } });';
-                let script = document.createElement("script");
-                script.appendChild(document.createTextNode(functionToInject));
-                document.body.appendChild(script);
-            }
+            let functionToInject = '(function () {';
+            functionToInject += 'let doAfterTrade = ' + JSON.stringify(g_s.doAfterTrade) + ';';
+            functionToInject += 'let storageKey = ' + JSON.stringify(PENDING_TRADE_KEY) + ';';
+            functionToInject += 'let storageVersion = ' + JSON.stringify(PENDING_TRADE_STORE_VERSION) + ';';
+            functionToInject += 'let trackingContext = ' + JSON.stringify(g_v.tradeTrackingContext) + ';';
+            functionToInject += 'if (window.__asfStmTradeSendHookInstalled) { return; }';
+            functionToInject += 'window.__asfStmTradeSendHookInstalled = true;';
+            functionToInject += '$J(document).ajaxSuccess(function (event, xhr, settings) {';
+            functionToInject += 'if (settings.url === "https://steamcommunity.com/tradeoffer/new/send") {';
+            functionToInject += 'try {';
+            functionToInject += 'let payload = JSON.parse(xhr.responseText || "{}");';
+            functionToInject += 'let offerId = String(payload.tradeofferid || payload.tradeofferid_new || "");';
+            functionToInject += 'if (offerId) {';
+            functionToInject += 'let store = { version: storageVersion, updatedAt: 0, trades: {} };';
+            functionToInject += 'try { let saved = JSON.parse(localStorage.getItem(storageKey)); if (saved && saved.version === storageVersion && saved.trades) { store = saved; } } catch (error) {}';
+            functionToInject += 'store.trades[offerId] = Object.assign({}, trackingContext, { offerId: offerId, state: "sent", updatedAt: Date.now() });';
+            functionToInject += 'store.updatedAt = Date.now();';
+            functionToInject += 'localStorage.setItem(storageKey, JSON.stringify(store));';
+            functionToInject += '}';
+            functionToInject += '} catch (error) {}';
+            functionToInject += 'if (doAfterTrade === "CLOSE_WINDOW") { window.close();';
+            functionToInject += '} else if (doAfterTrade === "CLICK_OK") {';
+            functionToInject += 'document.querySelector("div.newmodal_buttons > div").click(); }';
+            functionToInject += '} });';
+            functionToInject += '})();';
+            let script = document.createElement("script");
+            script.appendChild(document.createTextNode(functionToInject));
+            document.body.appendChild(script);
             // send trade offer
             if (g_s.autoSend) {
                 unsafeWindow.ToggleReady(true);
@@ -2796,7 +3112,7 @@
                 // select your inventory
                 unsafeWindow.TradePageSelectInventory(g_v.Users[0], 753, "6");
                 // set trade offer message
-                document.getElementById("trade_offer_note").value = g_s.tradeMessage;
+                document.getElementById("trade_offer_note").value = g_v.tradeOfferMessage;
                 try {
                     addCards(g_s, g_v);
                 } catch (e) {
@@ -2865,6 +3181,17 @@
                 if (Cards[0].length === 0) {
                     throw new Error("nothing to add, exiting");
                 }
+                const tradeMarker = createTradeMarker();
+                const tradeOfferMessage = buildTrackedTradeMessage(globalSettings.tradeMessage, tradeMarker);
+                const tradeTrackingContext = {
+                    marker: tradeMarker,
+                    createdAt: Date.now(),
+                    partner: vars.partner,
+                    match: vars.match,
+                    filter: filter,
+                    sendCardNames: Cards[0],
+                    receiveCardNames: Cards[1],
+                };
                 // clear cookie containing last opened inventory tab - prevents unwanted inventory loading (it will be restored later)
                 let oldCookie = document.cookie.split("strTradeLastInventoryContext=")[1];
                 if (oldCookie) {
@@ -2873,7 +3200,7 @@
                 document.cookie = "strTradeLastInventoryContext=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/tradeoffer/";
 
                 let Users = [unsafeWindow.UserYou, unsafeWindow.UserThem];
-                let global_vars = { Users: Users, oldCookie: oldCookie, Cards: Cards };
+                let global_vars = { Users: Users, oldCookie: oldCookie, Cards: Cards, tradeTrackingContext: tradeTrackingContext, tradeOfferMessage: tradeOfferMessage };
 
                 window.setTimeout(checkContexts, 500, globalSettings, global_vars);
             }
