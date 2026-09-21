@@ -1590,6 +1590,7 @@
         for (let i = 0; i < botBadges.length; i++) {
             let myBadge = deepClone(myBadges[i]);
             let theirBadge = deepClone(botBadges[i]);
+            const originalCardsByNumber = new Map(myBadges[i].cards.map((card) => [card.number, card]));
             let myState = calcState(myBadge);
             while (myState < 2) {
                 let foundMatch = false;
@@ -1612,7 +1613,7 @@
                                             continue; //it's not neutral+, check other options
                                         }
                                     }
-                                    const originalMyCard = myBadges[i].cards.find((card) => card.number === myBadge.cards[k].number) || myBadge.cards[k];
+                                    const originalMyCard = originalCardsByNumber.get(myBadge.cards[k].number) || myBadge.cards[k];
                                     let itemToSend = {
                                         item: myBadge.cards[k].item,
                                         count: 1,
@@ -2711,21 +2712,17 @@
                         tmpCards[id].sort(mySort);
                     });
                 }
-                if (i === 0) {
-                    Object.keys(tmpCards).forEach(function (id) {
-                        tmpCards[id] = tmpCards[id].slice(1);
-                    });
-                }
                 // add cards to trade in order given by STM
                 requestedCards.forEach(function (elem) {
                     currentCards = tmpCards[elem] || []; // all cards from inventory with requested signature
-                    if (currentCards.length === 0) {
+                    const reservedCopies = i === 0 ? 1 : 0;
+                    if (currentCards.length <= reservedCopies) {
                         failLater = true;
                     } else {
-                        index = 0;
+                        index = reservedCopies;
                         if (g_s.order === "RANDOM") {
                             // randomize index
-                            index = getRandomInt(0, currentCards.length);
+                            index = getRandomInt(reservedCopies, currentCards.length);
                         }
                         unsafeWindow.MoveItemToTrade(currentCards[index].element);
                         cardTypes[i].push(currentCards[index].type);
