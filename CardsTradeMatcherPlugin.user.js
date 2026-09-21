@@ -1392,20 +1392,35 @@
         return "rgba(23,26,33,0.8)";
     }
 
-    function populateCards(item) {
+    function getDuplicateCount(count) {
+        return Math.max(Number(count) - 1, 0);
+    }
+
+    function populateCards(item, options = {}) {
+        const showDuplicateCount = options.showDuplicateCount === true;
         let htmlCards = "";
         for (let j = 0; j < item.cards.length; j++) {
             const itemIcon = sanitizeSteamMediaUrl(item.cards[j].iconUrl);
             const itemName = escapeHtml(item.cards[j].item);
-            for (let k = 0; k < item.cards[j].count; k++) {
-                let cardTemplate = `
-                    <div class="showcase_slot">
+            const itemCount = Number(item.cards[j].count) || 0;
+            const duplicateCount = Number(item.cards[j].duplicateCount);
+            const countBadge = itemCount > 1
+                ? `<div class="commentthread_subscribe_hint" style="position:absolute;top:4px;right:4px;min-width:20px;padding:0 4px;text-align:center;border-radius:999px;background:rgba(23,26,33,0.9);"><b>x${itemCount}</b></div>`
+                : "";
+            const duplicateLabel = showDuplicateCount && Number.isFinite(duplicateCount)
+                ? `<div class="commentthread_subscribe_hint" style="width: 98px;">Dupes: ${duplicateCount}</div>`
+                : "";
+            let cardTemplate = `
+                <div class="showcase_slot">
+                    <div style="position:relative;display:inline-block;">
                         <img class="image-container" src="${itemIcon}/98x115">
-                        <div class="commentthread_subscribe_hint" style="width: 98px;">${itemName}</div>
+                        ${countBadge}
                     </div>
-                `;
-                htmlCards += cardTemplate.replaceAll(/(  |\n)/g, '');
-            }
+                    <div class="commentthread_subscribe_hint" style="width: 98px;">${itemName}</div>
+                    ${duplicateLabel}
+                </div>
+            `;
+            htmlCards += cardTemplate.replaceAll(/(  |\n)/g, '');
         }
         return htmlCards;
     }
@@ -1490,7 +1505,7 @@
                 }
             }
 
-            let sendResult = populateCards(itemsToSend[i]);
+            let sendResult = populateCards(itemsToSend[i], { showDuplicateCount: true });
             let receiveResult = populateCards(itemToReceive);
             let tradeUrlApp = getTargetTradeUrl(target, appId);
             const safeAppId = sanitizeAppId(appId);
@@ -1597,11 +1612,13 @@
                                             continue; //it's not neutral+, check other options
                                         }
                                     }
+                                    const originalMyCard = myBadges[i].cards.find((card) => card.number === myBadge.cards[k].number) || myBadge.cards[k];
                                     let itemToSend = {
                                         item: myBadge.cards[k].item,
                                         count: 1,
                                         iconUrl: myBadge.cards[k].iconUrl,
                                         hash: myBadge.cards[k].hash,
+                                        duplicateCount: getDuplicateCount(originalMyCard.count),
                                     };
                                     let itemToReceive = {
                                         item: theirBadge.cards[j].item,
@@ -1624,6 +1641,7 @@
                                             sendmatch.cards.push(itemToSend);
                                         } else {
                                             existingCard.count += 1;
+                                            existingCard.duplicateCount = itemToSend.duplicateCount;
                                         }
                                     }
                                     //add this item to their inventory
@@ -2691,6 +2709,11 @@
                     // sort cards descending by card id for each type
                     Object.keys(tmpCards).forEach(function (id) {
                         tmpCards[id].sort(mySort);
+                    });
+                }
+                if (i === 0) {
+                    Object.keys(tmpCards).forEach(function (id) {
+                        tmpCards[id] = tmpCards[id].slice(1);
                     });
                 }
                 // add cards to trade in order given by STM
