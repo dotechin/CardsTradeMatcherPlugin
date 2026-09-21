@@ -240,14 +240,18 @@
                     card.count = Math.max(0, card.count - consumed);
                 }
             });
-            badge.cards.sort((a, b) => b.count - a.count);
-            badge.unmatchable = badge.cards[0].count - badge.cards[badge.cards.length - 1].count < 2;
-            let totalCards = 0;
-            for (let i = 0; i < badge.cards.length; i++) {
-                totalCards += badge.cards[i].count;
+        });
+        const finalizedBadges = deepClone(reconciledBadges);
+        finalizeBadgeCollection(finalizedBadges, true);
+        const finalizedByAppId = new Map(finalizedBadges.map((badge) => [badge.appId, badge]));
+        reconciledBadges.forEach((badge) => {
+            const finalizedBadge = finalizedByAppId.get(badge.appId);
+            badge.unmatchable = finalizedBadge === undefined;
+            if (finalizedBadge) {
+                badge.cards = finalizedBadge.cards;
+                badge.maxSets = finalizedBadge.maxSets;
+                badge.lastSet = finalizedBadge.lastSet;
             }
-            badge.maxSets = Math.floor(totalCards / badge.maxCards);
-            badge.lastSet = Math.ceil(totalCards / badge.maxCards);
         });
         return reconciledBadges;
     }
@@ -3051,29 +3055,33 @@
             });
             restoreCookie(g_v.oldCookie);
             let functionToInject = '(function () {';
-            functionToInject += 'let doAfterTrade = ' + JSON.stringify(g_s.doAfterTrade) + ';';
-            functionToInject += 'let storageKey = ' + JSON.stringify(PENDING_TRADE_KEY) + ';';
-            functionToInject += 'let storageVersion = ' + JSON.stringify(PENDING_TRADE_STORE_VERSION) + ';';
-            functionToInject += 'let trackingContext = ' + JSON.stringify(g_v.tradeTrackingContext) + ';';
-            functionToInject += 'if (window.__asfStmTradeSendHookInstalled) { return; }';
+            functionToInject += 'window.__asfStmTradeSendContext = {';
+            functionToInject += 'doAfterTrade: ' + JSON.stringify(g_s.doAfterTrade) + ',';
+            functionToInject += 'storageKey: ' + JSON.stringify(PENDING_TRADE_KEY) + ',';
+            functionToInject += 'storageVersion: ' + JSON.stringify(PENDING_TRADE_STORE_VERSION) + ',';
+            functionToInject += 'trackingContext: ' + JSON.stringify(g_v.tradeTrackingContext);
+            functionToInject += '};';
+            functionToInject += 'if (!window.__asfStmTradeSendHookInstalled) {';
             functionToInject += 'window.__asfStmTradeSendHookInstalled = true;';
             functionToInject += '$J(document).ajaxSuccess(function (event, xhr, settings) {';
             functionToInject += 'if (settings.url === "https://steamcommunity.com/tradeoffer/new/send") {';
             functionToInject += 'try {';
+            functionToInject += 'let currentContext = window.__asfStmTradeSendContext || {};';
             functionToInject += 'let payload = JSON.parse(xhr.responseText || "{}");';
             functionToInject += 'let offerId = String(payload.tradeofferid || payload.tradeofferid_new || "");';
             functionToInject += 'if (offerId) {';
-            functionToInject += 'let store = { version: storageVersion, updatedAt: 0, trades: {} };';
-            functionToInject += 'try { let saved = JSON.parse(localStorage.getItem(storageKey)); if (saved && saved.version === storageVersion && saved.trades) { store = saved; } } catch (error) {}';
-            functionToInject += 'store.trades[offerId] = Object.assign({}, trackingContext, { offerId: offerId, state: "sent", updatedAt: Date.now() });';
+            functionToInject += 'let store = { version: currentContext.storageVersion, updatedAt: 0, trades: {} };';
+            functionToInject += 'try { let saved = JSON.parse(localStorage.getItem(currentContext.storageKey)); if (saved && saved.version === currentContext.storageVersion && saved.trades) { store = saved; } } catch (error) {}';
+            functionToInject += 'store.trades[offerId] = Object.assign({}, currentContext.trackingContext, { offerId: offerId, state: "sent", updatedAt: Date.now() });';
             functionToInject += 'store.updatedAt = Date.now();';
-            functionToInject += 'localStorage.setItem(storageKey, JSON.stringify(store));';
+            functionToInject += 'localStorage.setItem(currentContext.storageKey, JSON.stringify(store));';
             functionToInject += '}';
             functionToInject += '} catch (error) {}';
-            functionToInject += 'if (doAfterTrade === "CLOSE_WINDOW") { window.close();';
-            functionToInject += '} else if (doAfterTrade === "CLICK_OK") {';
+            functionToInject += 'if (currentContext.doAfterTrade === "CLOSE_WINDOW") { window.close();';
+            functionToInject += '} else if (currentContext.doAfterTrade === "CLICK_OK") {';
             functionToInject += 'document.querySelector("div.newmodal_buttons > div").click(); }';
             functionToInject += '} });';
+            functionToInject += '}';
             functionToInject += '})();';
             let script = document.createElement("script");
             script.appendChild(document.createTextNode(functionToInject));
