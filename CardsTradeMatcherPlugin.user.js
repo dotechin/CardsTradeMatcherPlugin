@@ -101,9 +101,11 @@
     let scanGeneration = 0;
     let adaptiveRequestDelay = null;
     let lastAdaptiveDecayAt = 0;
+    let ownInventorySnapshotTime = 0;
     let pendingTradeStore = null;
     let completedTradeStore = null;
     let tradeRefreshInFlight = false;
+    let tradeTrackingClearedAt = 0;
     let cardNames = new Set();
     let tradeParams = {
         matches: {},
@@ -186,6 +188,7 @@
         localStorage.removeItem(COMPLETED_TRADE_KEY);
         pendingTradeStore = null;
         completedTradeStore = null;
+        tradeTrackingClearedAt = Date.now();
     }
 
     function getTrackedTradeCounts() {
@@ -223,6 +226,10 @@
         const completedTrades = Object.values(getCompletedTradeStore().trades);
         const consumption = new Map();
         completedTrades.forEach((trade) => {
+            const completedAt = Number(trade.completedAt);
+            if (!isNaN(completedAt) && ownInventorySnapshotTime > 0 && completedAt <= ownInventorySnapshotTime) {
+                return;
+            }
             (trade.sendCardNames || []).forEach((hash) => {
                 consumption.set(hash, (consumption.get(hash) || 0) + 1);
             });
@@ -570,8 +577,8 @@
             updateTradeStatus("Refresh already running");
             return Promise.resolve();
         }
-        const pendingStore = deepClone(getPendingTradeStore());
-        const pendingTrades = Object.values(pendingStore.trades);
+        const refreshStartedAt = Date.now();
+        const pendingTrades = Object.values(deepClone(getPendingTradeStore()).trades);
         if (pendingTrades.length === 0) {
             updateTradeStatus("No pending STM trades");
             if (options.render !== false) {
@@ -583,8 +590,9 @@
         tradeRefreshInFlight = true;
         updateTradeStatus(`Refreshing ${pendingTrades.length} trade(s)…`);
         const requestFunc = getRequestFunc();
-        const completedStore = deepClone(getCompletedTradeStore());
         const terminalStates = new Set(["accepted", "declined", "cancelled", "expired", "countered"]);
+        const removedPendingOfferIds = new Set();
+        const acceptedTrades = {};
         let completedNow = 0;
 
         let refreshChain = Promise.resolve();
@@ -606,15 +614,15 @@
                             const tradeDocument = parser.parseFromString(response.responseText ?? response.response, "text/html");
                             const tradeState = parseTradeOfferState(tradeDocument);
                             if (tradeState === "accepted") {
-                                completedStore.trades[String(trade.offerId)] = {
+                                acceptedTrades[String(trade.offerId)] = {
                                     ...trade,
                                     state: tradeState,
                                     completedAt: Date.now(),
                                 };
-                                delete pendingStore.trades[String(trade.offerId)];
+                                removedPendingOfferIds.add(String(trade.offerId));
                                 completedNow++;
                             } else if (terminalStates.has(tradeState)) {
-                                delete pendingStore.trades[String(trade.offerId)];
+                                removedPendingOfferIds.add(String(trade.offerId));
                             }
                         } catch (error) {
                             console.warn("Failed to parse trade offer page", error);
@@ -633,6 +641,18 @@
 
         return refreshChain
             .then(() => {
+                if (tradeTrackingClearedAt > refreshStartedAt) {
+                    updateTradeStatus("Refresh cancelled");
+                    return;
+                }
+                const pendingStore = deepClone(getPendingTradeStore());
+                const completedStore = deepClone(getCompletedTradeStore());
+                removedPendingOfferIds.forEach((offerId) => {
+                    delete pendingStore.trades[offerId];
+                });
+                Object.keys(acceptedTrades).forEach((offerId) => {
+                    completedStore.trades[offerId] = acceptedTrades[offerId];
+                });
                 savePendingTradeStore(pendingStore);
                 saveCompletedTradeStore(completedStore);
                 if (options.render !== false) {
@@ -981,6 +1001,7 @@
             updateCacheStatus();
             return {
                 badges: deepClone(entry.badges),
+                cacheTime: entry.cacheTime,
                 stale: stale,
             };
         }
@@ -2107,6 +2128,7 @@
     function GetOwnCards(index) {
 
         if (index === 0) {
+            ownInventorySnapshotTime = 0;
             for (let i = 0; i < myBadges.length; i++) {
                 myBadges[i].cards.length = 0;
             }
@@ -2119,6 +2141,7 @@
                     refreshOwnInventoryCacheEntry(cacheKey, cacheMeta, myBadges);
                 }
                 myBadges = cachedInventory.badges;
+                ownInventorySnapshotTime = cachedInventory.cacheTime;
                 rememberCardNames(myBadges);
                 markProgressComplete('badges');
                 finalizeOwnInventoryAfterLoad();
@@ -2141,6 +2164,7 @@
                         appIds: finalCacheMeta.appIds,
                         badges: badges,
                     });
+                    ownInventorySnapshotTime = Date.now();
                     finalizeOwnInventoryAfterLoad();
                 })
                 .catch((error) => {
@@ -3003,6 +3027,7 @@
             let tmpCards, inv, index, currentCards;
             let failLater = false;
             let cardTypes = [[], []];
+            let trackedAssetIds = [[], []];
             g_v.Cards.forEach(function (requestedCards, i) {
                 tmpCards = {};
                 inv = g_v.Users[i].rgContexts[753][6].inventory;
@@ -3038,6 +3063,7 @@
                         }
                         unsafeWindow.MoveItemToTrade(currentCards[index].element);
                         cardTypes[i].push(currentCards[index].type);
+                        trackedAssetIds[i].push(String(currentCards[index].id));
                         currentCards.splice(index, 1);
                     }
                 });
@@ -3058,6 +3084,8 @@
                     throw "Not 1:1 trade";
                 }
             });
+            g_v.tradeTrackingContext.sendAssetIds = trackedAssetIds[0];
+            g_v.tradeTrackingContext.receiveAssetIds = trackedAssetIds[1];
             restoreCookie(g_v.oldCookie);
             let functionToInject = '(function () {';
             functionToInject += 'window.__asfStmTradeSendContext = {';
@@ -3068,6 +3096,35 @@
             functionToInject += '};';
             functionToInject += 'if (!window.__asfStmTradeSendHookInstalled) {';
             functionToInject += 'window.__asfStmTradeSendHookInstalled = true;';
+            functionToInject += 'function parseTradeOfferPayload(settings) {';
+            functionToInject += 'let payload = null;';
+            functionToInject += 'if (typeof settings.data === "string") {';
+            functionToInject += 'try { payload = new URLSearchParams(settings.data).get("json_tradeoffer"); } catch (error) {}';
+            functionToInject += '} else if (settings.data && typeof settings.data.get === "function") {';
+            functionToInject += 'try { payload = settings.data.get("json_tradeoffer"); } catch (error) {}';
+            functionToInject += '} else if (settings.data && typeof settings.data === "object" && typeof settings.data.json_tradeoffer === "string") {';
+            functionToInject += 'payload = settings.data.json_tradeoffer;';
+            functionToInject += '}';
+            functionToInject += 'if (!payload) { return null; }';
+            functionToInject += 'try { return JSON.parse(payload); } catch (error) { return null; }';
+            functionToInject += '}';
+            functionToInject += 'function normalizeAssetIds(assets) {';
+            functionToInject += 'return (Array.isArray(assets) ? assets : []).map(function (asset) {';
+            functionToInject += 'return String(asset && (asset.assetid || asset.id || ""));';
+            functionToInject += '}).filter(function (assetId) { return assetId.length > 0; }).sort();';
+            functionToInject += '}';
+            functionToInject += 'function sentOfferMatchesTrackingContext(settings, currentContext) {';
+            functionToInject += 'let tradeOffer = parseTradeOfferPayload(settings);';
+            functionToInject += 'let trackingContext = currentContext && currentContext.trackingContext;';
+            functionToInject += 'if (!tradeOffer || !trackingContext) { return false; }';
+            functionToInject += 'let expectedSend = normalizeAssetIds(trackingContext.sendAssetIds);';
+            functionToInject += 'let expectedReceive = normalizeAssetIds(trackingContext.receiveAssetIds);';
+            functionToInject += 'let actualSend = normalizeAssetIds(tradeOffer.me && tradeOffer.me.assets);';
+            functionToInject += 'let actualReceive = normalizeAssetIds(tradeOffer.them && tradeOffer.them.assets);';
+            functionToInject += 'if (expectedSend.length === 0 || expectedReceive.length === 0) { return false; }';
+            functionToInject += 'if (actualSend.length !== expectedSend.length || actualReceive.length !== expectedReceive.length) { return false; }';
+            functionToInject += 'return actualSend.every(function (assetId, index) { return assetId === expectedSend[index]; }) && actualReceive.every(function (assetId, index) { return assetId === expectedReceive[index]; });';
+            functionToInject += '}';
             functionToInject += '$J(document).ajaxSuccess(function (event, xhr, settings) {';
             functionToInject += 'if (settings.url === "https://steamcommunity.com/tradeoffer/new/send") {';
             functionToInject += 'try {';
@@ -3076,11 +3133,13 @@
             functionToInject += 'let offerId = String(payload.tradeofferid || payload.tradeofferid_new || "");';
             functionToInject += 'let sendSucceeded = Boolean(offerId) && !(typeof payload.strError === "string" && payload.strError.trim().length > 0);';
             functionToInject += 'if (sendSucceeded) {';
+            functionToInject += 'if (sentOfferMatchesTrackingContext(settings, currentContext)) {';
             functionToInject += 'let store = { version: currentContext.storageVersion, updatedAt: 0, trades: {} };';
             functionToInject += 'try { let saved = JSON.parse(localStorage.getItem(currentContext.storageKey)); if (saved && saved.version === currentContext.storageVersion && saved.trades) { store = saved; } } catch (error) {}';
             functionToInject += 'store.trades[offerId] = Object.assign({}, currentContext.trackingContext, { offerId: offerId, state: "sent", updatedAt: Date.now() });';
             functionToInject += 'store.updatedAt = Date.now();';
             functionToInject += 'localStorage.setItem(currentContext.storageKey, JSON.stringify(store));';
+            functionToInject += '}';
             functionToInject += 'if (currentContext.doAfterTrade === "CLOSE_WINDOW") { window.close();';
             functionToInject += '} else if (currentContext.doAfterTrade === "CLICK_OK") {';
             functionToInject += 'document.querySelector("div.newmodal_buttons > div").click(); }';
