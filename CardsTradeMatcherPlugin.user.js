@@ -3052,14 +3052,13 @@
                 // add cards to trade in order given by STM
                 requestedCards.forEach(function (elem) {
                     currentCards = tmpCards[elem] || []; // all cards from inventory with requested signature
-                    const reservedCopies = i === 0 ? 1 : 0;
-                    if (currentCards.length <= reservedCopies) {
+                    if (currentCards.length === 0) {
                         failLater = true;
                     } else {
-                        index = reservedCopies;
+                        index = 0;
                         if (g_s.order === "RANDOM") {
                             // randomize index
-                            index = getRandomInt(reservedCopies, currentCards.length);
+                            index = getRandomInt(0, currentCards.length);
                         }
                         unsafeWindow.MoveItemToTrade(currentCards[index].element);
                         cardTypes[i].push(currentCards[index].type);
