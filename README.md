@@ -6,7 +6,7 @@ A userscript that matches Steam Trading Cards with ASF bots and Steam friends.
 
 - **Installable file:** [`CardsTradeMatcherPlugin.user.js`](CardsTradeMatcherPlugin.user.js) (full userscript source)
 - **Direct install URL:** [`raw/CardsTradeMatcherPlugin.user.js`](https://raw.githubusercontent.com/dotechin/CardsTradeMatcherPlugin/main/CardsTradeMatcherPlugin.user.js)
-- **Version:** 6.2.3.0
+- **Version:** 6.4.0.0
 - **Authors:** Rudokhvist, iBreakEverything, dotechin
 
 ## Features
@@ -33,9 +33,7 @@ A userscript that matches Steam Trading Cards with ASF bots and Steam friends.
 - Profile backgrounds
 - Emoticons
 - Make the Inventory scanning in the Bot's background operations
-- Review the trade making logic, make duplicate lister tab,
-- Make 2 or more dupes the only tradable items (showing dupes only and number of owned cards)
-- Filters duplicates entries instead of updating them
+- Make duplicate lister tab
 
 ## Installation
 
