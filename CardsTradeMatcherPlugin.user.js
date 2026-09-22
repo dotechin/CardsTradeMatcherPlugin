@@ -3139,10 +3139,10 @@
             functionToInject += 'store.updatedAt = Date.now();';
             functionToInject += 'localStorage.setItem(currentContext.storageKey, JSON.stringify(store));';
             functionToInject += '}';
+            functionToInject += '}';
             functionToInject += 'if (currentContext.doAfterTrade === "CLOSE_WINDOW") { window.close();';
             functionToInject += '} else if (currentContext.doAfterTrade === "CLICK_OK") {';
             functionToInject += 'document.querySelector("div.newmodal_buttons > div").click(); }';
-            functionToInject += '}';
             functionToInject += '} catch (error) {}';
             functionToInject += '} });';
             functionToInject += '}';
