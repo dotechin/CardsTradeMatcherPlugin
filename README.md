@@ -34,6 +34,7 @@ A userscript that matches Steam Trading Cards with ASF bots and Steam friends.
 - Emoticons
 - Make the Inventory scanning in the Bot's background operations
 - Make duplicate lister tab
+- Show inventory size for users too
 
 ## Installation
 
