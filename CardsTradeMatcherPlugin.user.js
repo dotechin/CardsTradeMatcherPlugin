@@ -148,6 +148,11 @@
         return Number.isFinite(number) && number >= 1 ? Math.min(maximum, Math.floor(number)) : fallback;
     }
 
+    function boundedRetryLimit(value) {
+        const number = Number(value);
+        return Number.isFinite(number) ? Math.max(0, Math.min(5, Math.floor(number))) : 3;
+    }
+
     function isUserSteamID64(value) {
         if (!/^\d{17}$/.test(String(value))) {
             return false;
@@ -193,8 +198,7 @@
     }
 
     async function requestSteam(url, responseType, generation) {
-        const configuredRetries = Number(globalSettings.maxErrors);
-        const retries = Number.isFinite(configuredRetries) ? Math.max(0, Math.min(5, Math.floor(configuredRetries))) : 3;
+        const retries = boundedRetryLimit(globalSettings.maxErrors);
         for (let attempt = 0; attempt <= retries; attempt++) {
             assertCurrentScan(generation);
             if (attempt > 0) {
@@ -1046,6 +1050,7 @@
                     headers: {
                         "User-Agent": "ASF-STM/" + GM_info.version,
                     },
+                    timeout: 30000,
                     onload: function (response) {
                         if (response.status !== 200) {
                             resolve();
@@ -1575,6 +1580,7 @@
                 let xhr = new XMLHttpRequest();
                 xhr.open("GET", `https://steamcommunity.com/${myProfileLink}/ajaxgetbadgeinfo/${refreshedBadges[index].appId}`, true);
                 xhr.responseType = "json";
+                xhr.timeout = 30000;
                 xhr.onload = function () {
                     if (!isInventoryRefreshCurrent(cacheGeneration, refreshScanGeneration)) {
                         done();
@@ -1603,7 +1609,7 @@
                         // Retry below.
                     }
                     refreshErrors++;
-                    if ((status < 400 || status >= 500) && refreshErrors <= globalSettings.maxErrors) {
+                    if ((status < 400 || status >= 500) && refreshErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
                         setTimeout(function () {
                             refreshBadge(index);
                         }, globalSettings.weblimiter + globalSettings.errorLimiter * refreshErrors);
@@ -1617,7 +1623,7 @@
                         return;
                     }
                     refreshErrors++;
-                    if (refreshErrors <= globalSettings.maxErrors) {
+                    if (refreshErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
                         setTimeout(function () {
                             refreshBadge(index);
                         }, globalSettings.weblimiter + globalSettings.errorLimiter * refreshErrors);
@@ -1625,6 +1631,7 @@
                         failInventoryCacheRefresh(done);
                     }
                 };
+                xhr.ontimeout = xhr.onerror;
                 xhr.send();
             }
             refreshBadge(0);
@@ -1663,6 +1670,7 @@
                 let xhr = new XMLHttpRequest();
                 xhr.open("GET", `https://steamcommunity.com/${idLink ?? getTargetProfileLink(target)}/gamecards/${refreshedBadges[index].appId}`, true);
                 xhr.responseType = "document";
+                xhr.timeout = 30000;
                 xhr.onload = function () {
                     if (!isInventoryRefreshCurrent(cacheGeneration, refreshScanGeneration)) {
                         done();
@@ -1705,7 +1713,7 @@
                         }
                     }
                     refreshErrors++;
-                    if ((status < 400 || status >= 500) && refreshErrors <= globalSettings.maxErrors) {
+                    if ((status < 400 || status >= 500) && refreshErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
                         setTimeout(function () {
                             refreshBadge(index, idLink);
                         }, globalSettings.weblimiter + globalSettings.errorLimiter * refreshErrors);
@@ -1719,7 +1727,7 @@
                         return;
                     }
                     refreshErrors++;
-                    if (refreshErrors <= globalSettings.maxErrors) {
+                    if (refreshErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
                         setTimeout(function () {
                             refreshBadge(index, idLink);
                         }, globalSettings.weblimiter + globalSettings.errorLimiter * refreshErrors);
@@ -1727,6 +1735,7 @@
                         failInventoryCacheRefresh(done);
                     }
                 };
+                xhr.ontimeout = xhr.onerror;
                 xhr.send();
             }
             refreshBadge(0);
@@ -2732,7 +2741,7 @@
                         localErrors++;
                     }
                     recordRequestError();
-                    if ((status < 400 || status === 429 || status >= 500) && localErrors <= boundedLimit(globalSettings.maxErrors, 3, 5)) {
+                    if ((status < 400 || status === 429 || status >= 500) && localErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
                         setTimeout(attempt, globalSettings.weblimiter + globalSettings.errorLimiter * localErrors);
                     } else {
                         reject({type: 'fatal', message: `Error getting badge data: ${status}`});
@@ -2746,7 +2755,7 @@
                     }
                     localErrors++;
                     recordRequestError();
-                    if (localErrors <= boundedLimit(globalSettings.maxErrors, 3, 5)) {
+                    if (localErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
                         setTimeout(attempt, globalSettings.weblimiter + globalSettings.errorLimiter * localErrors);
                     } else {
                         reject({type: 'fatal', message: 'Max error rate reached'});
@@ -2901,7 +2910,7 @@
                         localErrors++;
                     }
                     recordRequestError();
-                    if ((status < 400 || status === 429 || status >= 500) && localErrors <= boundedLimit(globalSettings.maxErrors, 3, 5)) {
+                    if ((status < 400 || status === 429 || status >= 500) && localErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
                         setTimeout(attempt, globalSettings.weblimiter + globalSettings.errorLimiter * localErrors);
                     } else {
                         reject({type: 'fatal', message: `Error getting badge data: ${status}`});
@@ -2915,7 +2924,7 @@
                     }
                     localErrors++;
                     recordRequestError();
-                    if (localErrors <= boundedLimit(globalSettings.maxErrors, 3, 5)) {
+                    if (localErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
                         setTimeout(attempt, globalSettings.weblimiter + globalSettings.errorLimiter * localErrors);
                     } else {
                         reject({type: 'fatal', message: 'Max error rate reached'});
@@ -3186,7 +3195,7 @@
             } else {
                 errors++;
             }
-            if ((status < 400 || status === 429 || status >= 500) && errors <= boundedLimit(globalSettings.maxErrors, 3, 5)) {
+            if ((status < 400 || status === 429 || status >= 500) && errors <= boundedRetryLimit(globalSettings.maxErrors)) {
                 if (page <= maxPages) {
                     setTimeout(
                         (function (page) {
@@ -3223,7 +3232,7 @@
                 return;
             }
             errors++;
-            if (errors <= boundedLimit(globalSettings.maxErrors, 3, 5)) {
+            if (errors <= boundedRetryLimit(globalSettings.maxErrors)) {
                 setTimeout(
                     (function (page) {
                         return function () {
