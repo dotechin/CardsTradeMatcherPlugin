@@ -29,6 +29,7 @@
     let errors = 0;
     let bots = null;
     let myBadges = [];
+    let ownBadgeTemplates = [];
     let botBadges = [];
     let maxPages;
     let stop = false;
@@ -661,7 +662,8 @@
     }
 
     function getReconciledTargetBadges(target, badges) {
-        const reconciled = deepClone(badges);
+        const reconciled = validVerifiedInventory(target.inventorySnapshot) ?
+            buildVerifiedTargetBadges(target.inventorySnapshot) : deepClone(badges);
         if (!target.InventorySnapshotTime) {
             return reconciled;
         }
@@ -1762,9 +1764,9 @@
     function finalizeOwnInventoryAfterLoad() {
         if (globalSettings.scanGroups && ownInventoryVerifiedGeneration !== scanGeneration) {
             const generation = scanGeneration;
-            const templates = deepClone(myBadges);
+            ownBadgeTemplates = deepClone(myBadges);
             const rebuildBadges = snapshot => {
-                const badges = deepClone(templates);
+                const badges = deepClone(ownBadgeTemplates);
                 overlayCardInventory(badges, snapshot);
                 return badges;
             };
@@ -2477,19 +2479,23 @@
     function buildMatchesForTarget(index, availableMyBadges, targetBadges) {
         let itemsToSend = [];
         let itemsToReceive = [];
+        const ownBadgesByAppId = new Map(availableMyBadges.map(badge => [Number(badge.appId), badge]));
 
         for (let i = 0; i < targetBadges.length; i++) {
-            if (!availableMyBadges[i] || availableMyBadges[i].unmatchable || !targetBadges[i] || !Array.isArray(targetBadges[i].cards) || targetBadges[i].cards.length === 0) {
+            const targetBadge = targetBadges[i];
+            const ownBadge = targetBadge && ownBadgesByAppId.get(Number(targetBadge.appId));
+            if (!ownBadge || ownBadge.unmatchable || !Number.isSafeInteger(Number(targetBadge.appId)) || Number(targetBadge.appId) <= 0 ||
+                !Array.isArray(targetBadge.cards) || targetBadge.cards.length === 0) {
                 continue;
             }
-            let myBadge = deepClone(availableMyBadges[i]);
-            let theirBadge = deepClone(targetBadges[i]);
+            let myBadge = deepClone(ownBadge);
+            let theirBadge = deepClone(targetBadge);
             const verifiedRequired = globalSettings.scanGroups || bots.Result[index].SourceTypes.includes("groups");
             if (verifiedRequired && (myBadge.inventoryProvenance !== "steam-inventory-753-6" || theirBadge.inventoryProvenance !== "steam-inventory-753-6" ||
                 myBadge.cards.some(card => !Number.isSafeInteger(card.tradableCount)) || theirBadge.cards.some(card => !Number.isSafeInteger(card.tradableCount)))) {
                 continue;
             }
-            const originalCardsByNumber = new Map(availableMyBadges[i].cards.map((card) => [card.number, card]));
+            const originalCardsByNumber = new Map(ownBadge.cards.map((card) => [card.number, card]));
             let myState = calcState(myBadge);
             while (myState < 2) {
                 let foundMatch = false;
@@ -2648,7 +2654,7 @@
         for (let i = 0; i < bots.Result.length; i++) {
             const storedTargetBadges = bots.Result[i].badgesSnapshot;
             const targetBadges = Array.isArray(storedTargetBadges) ? getReconciledTargetBadges(bots.Result[i], storedTargetBadges) : null;
-            if (!Array.isArray(targetBadges) || targetBadges.length !== availableMyBadges.length) {
+            if (!Array.isArray(targetBadges)) {
                 continue;
             }
             const computedMatches = buildMatchesForTarget(i, availableMyBadges, targetBadges);
@@ -2821,6 +2827,8 @@
 
     function fetchTargetBadgeWithRetry(badges, index, target, idLinkRef, cancelToken) {
         const generation = scanGeneration;
+        const ownBadge = myBadges.find(badge => Number(badge.appId) === Number(badges[index].appId));
+        const ownCardsByNumber = new Map((ownBadge?.cards || []).map(card => [card.number, card.hash]));
         return new Promise((resolve, reject) => {
             let localErrors = 0;
             function attempt() {
@@ -2863,7 +2871,11 @@
                                     }
                                 });
                                 name = name.trim();
-                                let markethash = myBadges[index].cards.find((card) => card.number === i).hash;
+                                let markethash = ownCardsByNumber.get(i);
+                                if (!markethash) {
+                                    reject({type: 'fatal', message: `Missing card template for ${badges[index].appId}`});
+                                    return;
+                                }
                                 let icon = badgeCards[i].querySelector(".gamecard").src.trim();
                                 let newcard = {
                                     item: name,
@@ -2967,17 +2979,21 @@
             });
     }
 
+    function buildVerifiedTargetBadges(snapshot) {
+        const badges = deepClone(ownBadgeTemplates);
+        overlayCardInventory(badges, snapshot);
+        finalizeBadgeCollection(badges, false);
+        return badges;
+    }
+
     function scanVerifiedTarget(userindex) {
         const generation = scanGeneration;
         const target = bots.Result[userindex];
-        const templates = deepClone(myBadges);
         const id = target.SteamID64 || (76561197960265728n + BigInt(target.TradePartner)).toString();
         progressRadials.botBadges.textElement.textContent = "Inventory…";
         loadVerifiedInventory(id, generation, snapshot => {
-            const refreshed = deepClone(templates);
-            overlayCardInventory(refreshed, snapshot);
-            finalizeBadgeCollection(refreshed, false);
-            target.badgesSnapshot = refreshed;
+            target.inventorySnapshot = deepClone(snapshot);
+            target.badgesSnapshot = buildVerifiedTargetBadges(snapshot);
             target.InventorySnapshotTime = snapshot.snapshotTime;
             target.NormalCardCount = Object.values(snapshot.counts).reduce((sum, card) => sum + card.count, 0);
             setTargetInventoryStatus(target, `refreshed ${snapshot.status}`);
@@ -2987,11 +3003,11 @@
             renderStoredMatches();
         }).then(snapshot => {
             assertCurrentScan(generation);
-            overlayCardInventory(templates, snapshot);
+            target.inventorySnapshot = deepClone(snapshot);
             target.InventorySnapshotTime = snapshot.snapshotTime;
             setTargetInventoryStatus(target, snapshot.status);
             target.NormalCardCount = Object.values(snapshot.counts).reduce((sum, card) => sum + card.count, 0);
-            botBadges = templates;
+            botBadges = buildVerifiedTargetBadges(snapshot);
             markProgressComplete("botBadges");
             updateProgress("bots");
             finalizeTargetInventoryAfterLoad(userindex);
@@ -3382,6 +3398,7 @@
             scanGeneration++;
             stop = false;
             ownInventoryVerifiedGeneration = -1;
+            ownBadgeTemplates = [];
             groupDiscoveryReports = [];
             inventoryScanStatuses = {};
             inventoryRefreshQueue.length = 0;
@@ -3412,6 +3429,7 @@
         bots.Result.sort(botSorter);
         bots.Result.forEach(target => {
             delete target.badgesSnapshot;
+            delete target.inventorySnapshot;
             delete target.itemsToSend;
             delete target.itemsToReceive;
             delete target.CountedInventoryStatus;
