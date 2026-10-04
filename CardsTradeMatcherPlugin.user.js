@@ -147,7 +147,8 @@
         .asf-stm-config .asf_stm_tab>input:checked+label{background:#303030;border-bottom-color:#303030;color:#fff}
         .asf-stm-config .asf_stm_content{grid-column:1/-1;grid-row:2;position:static;width:100%;height:min(56vh,480px);min-height:180px;padding:16px;overflow:auto;background:#303030;border:1px solid #354658;border-top:0}
         .asf-stm-config fieldset{min-width:0;margin:0 0 14px;padding:12px;border:1px solid #4a515b;border-radius:3px}
-        .asf-stm-config fieldset:last-child{margin-bottom:0}
+        .asf-stm-config fieldset label{display:flex;align-items:center;gap:8px;margin-bottom:10px;line-height:1.4}
+        .asf-stm-config fieldset label:last-child{margin-bottom:0}
         .asf-stm-config legend{padding:0 6px;color:#66c0f4;font-size:11px;letter-spacing:.06em}
         .asf-stm-config .asf-stm-input,.asf-stm-config .asf-stm-select,.asf-stm-config .asf-stm-textarea{border:1px solid #4a515b;border-radius:3px;padding:6px 8px;max-width:100%;font:inherit}
         .asf-stm-config .asf-stm-input[type=number]{width:100px}
