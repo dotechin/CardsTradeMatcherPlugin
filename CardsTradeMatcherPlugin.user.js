@@ -240,21 +240,30 @@
         }
     }
 
-    async function scanDelay(delay, generation) {
+    async function scanDelay(delay, generation, isCurrent = () => true) {
         const deadline = Date.now() + Math.max(0, delay);
         while (Date.now() < deadline) {
             assertCurrentScan(generation);
+            if (!isCurrent()) {
+                throw {type: "stopped"};
+            }
             await new Promise(resolve => setTimeout(resolve, Math.min(250, deadline - Date.now())));
         }
         assertCurrentScan(generation);
+        if (!isCurrent()) {
+            throw {type: "stopped"};
+        }
     }
 
-    async function waitForSteamSlot(generation) {
+    async function waitForSteamSlot(generation, isCurrent = () => true) {
         while (true) {
             assertCurrentScan(generation);
+            if (!isCurrent()) {
+                throw {type: "stopped"};
+            }
             const wait = Math.max(steamCooldownUntil, nextSteamRequestAt) - Date.now();
             if (wait > 0) {
-                await scanDelay(wait, generation);
+                await scanDelay(wait, generation, isCurrent);
                 continue;
             }
             nextSteamRequestAt = Date.now() + Math.max(Number(globalSettings.weblimiter) || 0, getAdaptiveRequestDelay());
@@ -262,9 +271,12 @@
         }
     }
 
-    function sendPacedSteamRequest(xhr, generation, onCancelled) {
-        waitForSteamSlot(generation).then(() => {
+    function sendPacedSteamRequest(xhr, generation, onCancelled, isCurrent = () => true, onDispatch = () => {}) {
+        waitForSteamSlot(generation, isCurrent).then(() => {
             assertCurrentScan(generation);
+            if (!isCurrent()) {
+                throw {type: "stopped"};
+            }
             activeScanRequests.add(xhr);
             xhr.addEventListener("loadend", () => {
                 activeScanRequests.delete(xhr);
@@ -275,6 +287,7 @@
                 }
             });
             xhr.onabort = () => onCancelled({type: "stopped"});
+            onDispatch();
             xhr.send();
         }).catch(onCancelled);
     }
@@ -1836,7 +1849,7 @@
                         // Retry below.
                     }
                     refreshErrors++;
-                    if ((status < 400 || status >= 500) && refreshErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
+                    if ((status < 400 || status === 408 || status === 429 || status >= 500) && refreshErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
                         setTimeout(function () {
                             refreshBadge(index);
                         }, globalSettings.weblimiter + globalSettings.errorLimiter * refreshErrors);
@@ -1859,7 +1872,7 @@
                     }
                 };
                 xhr.ontimeout = xhr.onerror;
-                sendPacedSteamRequest(xhr, refreshScanGeneration, done);
+                sendPacedSteamRequest(xhr, refreshScanGeneration, done, () => isInventoryRefreshCurrent(cacheGeneration, refreshScanGeneration));
             }
             refreshBadge(0);
         });
@@ -1940,7 +1953,7 @@
                         }
                     }
                     refreshErrors++;
-                    if ((status < 400 || status >= 500) && refreshErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
+                    if ((status < 400 || status === 408 || status === 429 || status >= 500) && refreshErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
                         setTimeout(function () {
                             refreshBadge(index, idLink);
                         }, globalSettings.weblimiter + globalSettings.errorLimiter * refreshErrors);
@@ -1963,7 +1976,7 @@
                     }
                 };
                 xhr.ontimeout = xhr.onerror;
-                sendPacedSteamRequest(xhr, refreshScanGeneration, done);
+                sendPacedSteamRequest(xhr, refreshScanGeneration, done, () => isInventoryRefreshCurrent(cacheGeneration, refreshScanGeneration));
             }
             refreshBadge(0);
         });
@@ -2938,6 +2951,7 @@
         const generation = scanGeneration;
         return new Promise((resolve, reject) => {
             let localErrors = 0;
+            let attempts = 0;
             function attempt() {
                 if (stop || generation !== scanGeneration || cancelToken.cancelled) {
                     reject({type: 'stopped'});
@@ -2987,7 +3001,7 @@
                                     localErrors++;
                                 }
                             } else {
-                                reject({type: 'fatal', message: `Badge data fetch error: ${badges[index].appId}`});
+                                reject(requestFailure(url, "Your badge inventory", {status, event: "load"}, attempts));
                                 return;
                             }
                         } catch (error) {
@@ -2997,14 +3011,14 @@
                         localErrors++;
                     }
                     recordRequestError();
-                    if ((status < 400 || status === 429 || status >= 500) && localErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
+                    if ((status < 400 || status === 408 || status === 429 || status >= 500) && localErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
                         setTimeout(attempt, globalSettings.weblimiter + globalSettings.errorLimiter * localErrors);
                     } else {
-                        reject({type: 'fatal', message: `Error getting badge data: ${status}`});
+                        reject(requestFailure(url, "Your badge inventory", {status, event: "load"}, attempts));
                     }
                 };
                 // eslint-disable-next-line
-                xhr.onerror = function () {
+                xhr.onerror = function (event) {
                     if (stop || generation !== scanGeneration || cancelToken.cancelled) {
                         reject({type: 'stopped'});
                         return;
@@ -3014,11 +3028,11 @@
                     if (localErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
                         setTimeout(attempt, globalSettings.weblimiter + globalSettings.errorLimiter * localErrors);
                     } else {
-                        reject({type: 'fatal', message: 'Max error rate reached'});
+                        reject(requestFailure(url, "Your badge inventory", {status: xhr.status, event: event === "timeout" ? "timeout" : "network"}, attempts));
                     }
                 };
-                xhr.ontimeout = xhr.onerror;
-                sendPacedSteamRequest(xhr, generation, reject);
+                xhr.ontimeout = () => xhr.onerror("timeout");
+                sendPacedSteamRequest(xhr, generation, reject, () => !cancelToken.cancelled, () => attempts++);
             }
             attempt();
         });
@@ -3085,6 +3099,7 @@
                         stopEventCleanup('User interrupt');
                         return;
                     }
+                    showScanDiagnostic(error);
                     stopEventCleanup(error?.message ?? 'Error getting badge data');
                 });
         }
@@ -3096,6 +3111,7 @@
         const ownCardsByNumber = new Map((ownBadge?.cards || []).map(card => [card.number, card.hash]));
         return new Promise((resolve, reject) => {
             let localErrors = 0;
+            let attempts = 0;
             function attempt() {
                 if (stop || generation !== scanGeneration || cancelToken.cancelled) {
                     reject({type: 'stopped'});
@@ -3118,7 +3134,8 @@
                     let status = xhr.status;
                     if (status === 200) {
                         if (null === xhr.response.documentElement.querySelector(".badge_card_set_cards")) {
-                            reject({type: 'private'});
+                            reject({...requestFailure(url, "Target badge inventory", {status, event: "load"}, attempts),
+                                type: "private", message: `Target badge inventory: ${new URL(url).pathname} — HTTP 200, ${attempts} attempt(s); cards unavailable/private. Check inventory privacy.`});
                             return;
                         }
                         let badgeCards = xhr.response.documentElement.querySelectorAll(".badge_card_set_card");
@@ -3166,14 +3183,14 @@
                         localErrors++;
                     }
                     recordRequestError();
-                    if ((status < 400 || status === 429 || status >= 500) && localErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
+                    if ((status < 400 || status === 408 || status === 429 || status >= 500) && localErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
                         setTimeout(attempt, globalSettings.weblimiter + globalSettings.errorLimiter * localErrors);
                     } else {
-                        reject({type: 'fatal', message: `Error getting badge data: ${status}`});
+                        reject(requestFailure(url, "Target badge inventory", {status, event: "load"}, attempts));
                     }
                 };
                 // eslint-disable-next-line
-                xhr.onerror = function () {
+                xhr.onerror = function (event) {
                     if (stop || generation !== scanGeneration || cancelToken.cancelled) {
                         reject({type: 'stopped'});
                         return;
@@ -3183,11 +3200,11 @@
                     if (localErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
                         setTimeout(attempt, globalSettings.weblimiter + globalSettings.errorLimiter * localErrors);
                     } else {
-                        reject({type: 'fatal', message: 'Max error rate reached'});
+                        reject(requestFailure(url, "Target badge inventory", {status: xhr.status, event: event === "timeout" ? "timeout" : "network"}, attempts));
                     }
                 };
-                xhr.ontimeout = xhr.onerror;
-                sendPacedSteamRequest(xhr, generation, reject);
+                xhr.ontimeout = () => xhr.onerror("timeout");
+                sendPacedSteamRequest(xhr, generation, reject, () => !cancelToken.cancelled, () => attempts++);
             }
             attempt();
         });
@@ -3225,9 +3242,10 @@
                     stopEventCleanup('User interrupt');
                     return;
                 }
-                if (error?.type === 'private' || error?.type === 'fatal') {
+                if (error?.type === 'private' || error?.type === 'fatal' || error?.type === 'failed') {
                     updateProgress('bots');
                     setTargetInventoryStatus(target, error.type === "private" ? "private/unavailable" : "failed");
+                    showScanDiagnostic(error);
                     setTimeout(
                         (function (userindex) {
                             return function () {
@@ -3453,7 +3471,7 @@
             } else {
                 errors++;
             }
-            if ((status < 400 || status === 429 || status >= 500) && errors <= boundedRetryLimit(globalSettings.maxErrors)) {
+            if ((status < 400 || status === 408 || status === 429 || status >= 500) && errors <= boundedRetryLimit(globalSettings.maxErrors)) {
                 if (page <= maxPages) {
                     setTimeout(
                         (function (page) {
@@ -3477,11 +3495,12 @@
                     }
                 }
             } else {
-                stopEventCleanup('error fetching badges page: request error');
+                showScanDiagnostic(requestFailure(url, "Your badge pages", {status, event: "load"}, errors));
+                stopEventCleanup('Your badge pages unavailable; scan stopped');
                 return;
             }
         };
-        xhr.onerror = function () {
+        xhr.onerror = function (event) {
             if (generation !== scanGeneration) {
                 return;
             }
@@ -3500,11 +3519,12 @@
                     globalSettings.weblimiter + globalSettings.errorLimiter * errors,
                 );
             } else {
-                stopEventCleanup('Max error rate reached');
+                showScanDiagnostic(requestFailure(url, "Your badge pages", {status: xhr.status, event: event === "timeout" ? "timeout" : "network"}, errors));
+                stopEventCleanup('Your badge pages unavailable; scan stopped');
                 return;
             }
         };
-        xhr.ontimeout = xhr.onerror;
+        xhr.ontimeout = () => xhr.onerror("timeout");
         sendPacedSteamRequest(xhr, generation, () => {});
     }
 
@@ -3669,6 +3689,7 @@
             groupDiscoveryReports = [];
             inventoryScanStatuses = {};
             inventoryRefreshQueue.length = 0;
+            errors = 0;
             scanStatus = {progress: "", warning: "", diagnostic: ""};
             resetAdaptiveRequestDelay();
             renderScanStatus();

@@ -42,6 +42,7 @@ function harness(responses = []) {
         },
         XMLHttpRequest: class {
             open(method, url) { this.url = url; }
+            addEventListener(name, callback) { this[name] = callback; }
             getResponseHeader() { return this.reply.retryAfter || null; }
             send() {
                 starts.push(now);
@@ -49,7 +50,10 @@ function harness(responses = []) {
                 assert.ok(this.reply, "unexpected request");
                 this.status = this.reply.status;
                 this.response = this.reply.body ?? null;
-                queueMicrotask(() => this[`on${this.reply.event || "load"}`]());
+                queueMicrotask(() => {
+                    this[`on${this.reply.event || "load"}`]();
+                    this.loadend?.();
+                });
             }
             abort() { this.onabort(); }
         },
@@ -66,7 +70,7 @@ function harness(responses = []) {
         function updateResultSummary() {}
         function getRequestFunc() { return gmRequest; }
         const GM_info = {version: "test"};
-        ${["boundedRetryLimit", "assertCurrentScan", "scanDelay", "waitForSteamSlot",
+        ${["boundedRetryLimit", "assertCurrentScan", "scanDelay", "waitForSteamSlot", "sendPacedSteamRequest",
             "retryAfterDelay", "sanitizeDiagnostic", "requestFailure", "requestWithRetries",
             "requestSteam", "requestSource", "sourceWarning", "showDiscoveryProgress",
             "renderScanStatus", "showScanDiagnostic"].map(declaration).join("\n")}
@@ -364,4 +368,62 @@ test("own verified inventory failure stops safely; individual target failure adv
     assert.equal(h.context.advancedTo, 1);
     assert.equal(h.run("bots.Result[0].InventoryStatus"), "private/unavailable");
     assert.equal(h.run("bots.Result[0].inventorySnapshot"), undefined);
+});
+
+test("queued badge requests do not dispatch after worker-pool cancellation", async () => {
+    const h = harness();
+    h.run("steamCooldownUntil = 90000; let cancelled = false");
+    h.context.onSleep = () => h.run("cancelled = true");
+    await assert.rejects(h.run(`new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        sendPacedSteamRequest(xhr, 1, reject, () => !cancelled);
+    })`), error => error.type === "stopped");
+    assert.equal(h.starts.length, 0);
+    assert.equal(h.now(), 250, "pool cancellation interrupts a long wait");
+});
+
+test("ordinary badge workers retain status, attempts, path and timeout/network events", async () => {
+    for (const worker of ["fetchOwnBadgeWithRetry", "fetchTargetBadgeWithRetry"]) {
+        for (const reply of [{status: 503}, {status: 403}, {status: 0, event: "timeout"}, {status: 0, event: "error"}]) {
+            const h = harness([reply]);
+            h.run(`
+                globalSettings.maxErrors = 0;
+                const myProfileLink = "id/me", myBadges = [];
+                function updateProgress() {}
+                function getTargetProfileLink() { return "id/target"; }
+                ${declaration(worker)}
+            `);
+            const call = worker === "fetchOwnBadgeWithRetry" ?
+                `fetchOwnBadgeWithRetry([{appId: 123, cards: []}], 0, new Set(), {cancelled: false})` :
+                `fetchTargetBadgeWithRetry([{appId: 123, cards: []}], 0, {}, {value: undefined}, {cancelled: false})`;
+            await assert.rejects(h.run(call), error => error.attempts === 1 &&
+                error.status === reply.status && error.path.endsWith("/123") &&
+                error.event === (reply.event === "error" ? "network" : reply.event || "load"));
+            assert.equal(h.starts.length, 1);
+            assert.equal(h.sleeps.length, 0);
+        }
+    }
+});
+
+test("ordinary target scan publishes structured failures and skips to the next target", async () => {
+    const h = harness();
+    h.run(`
+        const inventoryCacheGeneration = 1;
+        let bots = {Result: [{}]}, botBadges = [{appId: 123}];
+        function getScanConcurrency() { return 1; }
+        async function runIndexedWorkerPool() {
+            throw requestFailure("https://steamcommunity.com/id/target/gamecards/123", "Target badge inventory", {status: 503, event: "load"}, 3);
+        }
+        function updateProgress() {}
+        function setTargetInventoryStatus(target, status) { target.InventoryStatus = status; }
+        function showScanDiagnostic(error) { diagnostic = error.message; }
+        function GetCards(index, userindex) { advancedTo = userindex; }
+        ${declaration("scanTargetBadges")}
+        scanTargetBadges(0);
+    `);
+    await new Promise(setImmediate);
+    await new Promise(setImmediate);
+    assert.equal(h.context.advancedTo, 1);
+    assert.equal(h.run("bots.Result[0].InventoryStatus"), "failed");
+    assert.match(h.context.diagnostic, /Target badge inventory.*HTTP 503, 3 attempt/);
 });
