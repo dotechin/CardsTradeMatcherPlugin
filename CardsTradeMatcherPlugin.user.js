@@ -316,11 +316,12 @@
 
     function requestFailure(url, stage, response, attempts) {
         const path = new URL(url).pathname;
+        const steam = new URL(url).hostname === "steamcommunity.com";
         const status = Number(response.status) || 0;
         const event = response.event || "network";
         const detail = status ? `HTTP ${status}${event !== "load" ? ` (${event})` : ""}` : `${event}; no HTTP status`;
         const guidance = status === 429 ? "Server reported rate limiting (429). Wait before retrying; reduce parallel requests." :
-            status === 401 || status === 403 ? "Check Steam sign-in and inventory/member-list privacy or permissions." :
+            status === 401 || status === 403 ? steam ? "Check Steam sign-in and inventory/member-list privacy or permissions." : "Check authorization and access permissions for this source." :
             status === 404 ? "Check that the profile/group or endpoint still exists." :
             status >= 400 && status < 500 && status !== 408 ? "Check the request/endpoint; this response is not retried." :
             "Check connectivity and Steam/ASF availability. Try parallel requests 1 and web limiter 1500 ms; this is not a guaranteed fix.";
@@ -3917,6 +3918,9 @@
                 return;
             }
             const successfulResults = results.filter(result => result.status === "fulfilled").map(result => result.value);
+            const successfulSource = results.some((result, index) => result.status === "fulfilled" &&
+                (fetchers[index].name !== "Groups" || result.value.length > 0 ||
+                    groupDiscoveryReports.some(report => report.status === "complete")));
             const sourceReports = results.map((result, index) => ({
                 name: fetchers[index].name,
                 status: result.status !== "fulfilled" ? "failed" :
@@ -3930,7 +3934,7 @@
             }));
             const partialFailure = results.some(result => result.status !== "fulfilled") || groupDiscoveryReports.some(report => report.status !== "complete");
             bots = {
-                Success: successfulResults.length > 0 || whitelist.length > 0,
+                Success: successfulSource || whitelist.length > 0,
                 profileLink: myProfileLink,
                 cacheTime: Date.now(),
                 partialFailure: partialFailure,

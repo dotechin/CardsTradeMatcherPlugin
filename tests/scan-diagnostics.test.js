@@ -98,6 +98,15 @@ test("nonretryable HTTP errors stop on first attempt, including private inventor
     }
 });
 
+test("authorization guidance distinguishes Steam from external sources", () => {
+    const h = harness();
+    const steam = h.run(`requestFailure("https://steamcommunity.com/inventory/123/753/6", "Inventory", {status: 403}, 1).message`);
+    const asf = h.run(`requestFailure("https://asf.justarchi.net/Api/Listing/Bots", "ASF", {status: 403}, 1).message`);
+    assert.match(steam, /Steam sign-in and inventory\/member-list privacy/);
+    assert.match(asf, /authorization and access permissions for this source/);
+    assert.doesNotMatch(asf, /Steam sign-in|inventory\/member-list privacy/);
+});
+
 test("timeout and network failures remain distinct with no invented HTTP status", async () => {
     for (const event of ["timeout", "error"]) {
         const h = harness([{status: 0, event}]);
@@ -303,6 +312,45 @@ test("discovery caches named failures, caps, and successful targets without inve
     assert.equal(h.context.started, false);
     assert.match(h.context.stoppedReason, /Failed to fetch enabled sources/);
     assert.match(h.run("scanStatus.warning"), /ASF.*HTTP 503/);
+});
+
+test("failed-only group discovery is unsuccessful but completed empty discovery succeeds", async () => {
+    const h = harness();
+    h.context.saved = [];
+    h.run(`
+        let bots, groupDiscoveryReports = [];
+        const whitelist = [], myProfileLink = "id/me", STORAGE_PREFIX = "test";
+        globalSettings.tradeUrls = [];
+        const localStorage = {setItem(key, value) { saved.push(JSON.parse(value)); }};
+        function getEnabledSources() { return {scanBots: false, scanFriends: false, scanGroups: true}; }
+        function deepClone(value) { return JSON.parse(JSON.stringify(value)); }
+        function mergeTargets(lists) { return lists.flat(); }
+        function normalizeWhitelistSteamID(id) { return id; }
+        function renderScanStatus() {}
+        function showDiscoveryProgress() {}
+        function buttonPressedEvent(ready) { started = ready; }
+        function stopEventCleanup(reason) { stoppedReason = reason; }
+        async function discoverGroupTargets() {
+            groupDiscoveryReports = [{name: "Unavailable", status: "partial: failed", kind: "failure"}];
+            return [];
+        }
+        ${declaration("fetchBots")}
+        fetchBots();
+    `);
+    await new Promise(setImmediate);
+    assert.equal(h.context.saved[0].Success, false);
+    assert.equal(h.context.started, undefined);
+
+    h.run(`
+        discoverGroupTargets = async function() {
+            groupDiscoveryReports = [{name: "Empty", status: "complete"}];
+            return [];
+        };
+        fetchBots();
+    `);
+    await new Promise(setImmediate);
+    assert.equal(h.context.saved[1].Success, true);
+    assert.equal(h.context.started, true);
 });
 
 test("group member/page/group limits retain targets and remain limit reports", async () => {
