@@ -26,7 +26,7 @@ A userscript that matches Steam Trading Cards with ASF bots, Steam friends, and 
 
 ## Steam group scanning
 
-Open **Configuration → Groups**, add HTTPS `steamcommunity.com/groups/<name>` or `steamcommunity.com/gid/<ID>` URLs, and enable group scanning. Saved groups remain available when disabled. Set the number of groups per scan and default page/member limits; individual groups can override the defaults. Groups coexist with ASF bots, friends, and the whitelist. Members are deduplicated across sources, excluding your account and blacklisted accounts (account IDs or SteamID64s).
+Enable **Scan saved groups** under **Configuration → Matcher → Scan sources**. Manage groups under **Configuration → Groups**: add HTTPS `steamcommunity.com/groups/<name>` or `steamcommunity.com/gid/<ID>` URLs. Saved links display a short `groups/<name>` or `gid/<ID>` label; hover to see the full URL. Saved groups remain available when disabled. Set the number of groups per scan and default page/member limits; individual groups can override the defaults. Groups coexist with ASF bots, friends, and the whitelist. Members are deduplicated across sources, excluding your account and blacklisted accounts (account IDs or SteamID64s).
 
 Discovery reads Steam's paginated `memberslistxml/?xml=1&p=N` response. Limits, unavailable groups, incomplete responses, and failed/private inventories are reported as partial rather than a complete group scan. A private target is skipped, not automatically blacklisted. All targets use paginated `/inventory/<SteamID64>/753/6` inventories while group mode is enabled. Existing badge templates/scan filters define the games to match; foil cards and other items are excluded using stable Steam tags and market hashes.
 

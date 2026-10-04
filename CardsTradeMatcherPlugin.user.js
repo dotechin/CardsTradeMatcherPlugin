@@ -137,6 +137,46 @@
     });
 
     //styles
+    const configCss = `
+        .asf-stm-config{width:min(720px,calc(100vw - 64px));height:auto;margin:0;font-size:13px;line-height:1.5;color:#dfe3e6}
+        .asf-stm-config *{box-sizing:border-box}
+        .asf-stm-config .asf_stm_tabs{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));width:100%;margin:0;padding:0;list-style:none}
+        .asf-stm-config .asf_stm_tab{display:contents;float:none}
+        .asf-stm-config .asf_stm_tab>label{display:flex;align-items:center;justify-content:center;grid-row:1;padding:10px 8px;text-align:center;background:#1b2838;border:1px solid #354658;color:#c7d5e0;overflow-wrap:anywhere}
+        .asf-stm-config .asf_stm_tab>input:focus-visible+label{outline:2px solid #66c0f4;outline-offset:-3px}
+        .asf-stm-config .asf_stm_tab>input:checked+label{background:#303030;border-bottom-color:#303030;color:#fff}
+        .asf-stm-config .asf_stm_content{grid-column:1/-1;grid-row:2;position:static;width:100%;height:min(56vh,480px);min-height:180px;padding:16px;overflow:auto;background:#303030;border:1px solid #354658;border-top:0}
+        .asf-stm-config fieldset{min-width:0;margin:0 0 14px;padding:12px;border:1px solid #4a515b;border-radius:3px}
+        .asf-stm-config fieldset:last-child{margin-bottom:0}
+        .asf-stm-config legend{padding:0 6px;color:#66c0f4;font-size:11px;letter-spacing:.06em}
+        .asf-stm-config .asf-stm-input,.asf-stm-config .asf-stm-select,.asf-stm-config .asf-stm-textarea{border:1px solid #4a515b;border-radius:3px;padding:6px 8px;max-width:100%;font:inherit}
+        .asf-stm-config .asf-stm-input[type=number]{width:100px}
+        .asf-stm-config .asf-stm-input[type=color]{width:48px;height:30px;padding:2px;vertical-align:middle}
+        .asf-stm-config .asf-stm-textarea{display:block;width:100%;resize:vertical}
+        .asf-stm-config .asf-stm-checkbox{vertical-align:middle;margin:4px 6px}
+        .asf-stm-config .asf-stm-margin-bottom{margin-bottom:10px}
+        .asf-stm-config .asf-stm-span{vertical-align:middle}
+        .asf-stm-config .tooltip img{width:16px;height:16px;vertical-align:middle;margin-left:4px}
+        .asf-stm-config button{cursor:pointer}
+        .asf-stm-config p{margin:0 0 10px}
+        .asf-stm-config .asf-stm-group-defaults{display:grid;grid-template-columns:minmax(0,1fr) 100px;gap:8px 12px;align-items:center;margin-bottom:12px}
+        .asf-stm-config .asf-stm-group-add{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+        .asf-stm-config #addGroupUrl{flex:1;min-width:160px}
+        .asf-stm-config #groupSettingsStatus{margin-top:8px;color:#c7d5e0;overflow-wrap:anywhere}
+        .asf-stm-config .asf-stm-group-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto auto;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid #4a515b}
+        .asf-stm-config .asf-stm-group-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#66c0f4}
+        .asf-stm-config .asf-stm-group-row label{display:flex;align-items:center;gap:6px;white-space:nowrap}
+        .asf-stm-config .asf-stm-group-row .asf-stm-input{width:76px}
+        .asf-stm-config .asf-stm-group-row button{white-space:nowrap}
+        @media(max-width:540px){
+            .asf-stm-config .asf_stm_tabs{grid-template-columns:repeat(3,minmax(0,1fr))}
+            .asf-stm-config .asf_stm_tab>label{grid-row:auto}
+            .asf-stm-config .asf_stm_content{grid-row:3;padding:10px}
+            .asf-stm-config .asf-stm-group-row{grid-template-columns:auto minmax(0,1fr) auto}
+            .asf-stm-config .asf-stm-group-name{grid-column:2/-1}
+            .asf-stm-config .asf-stm-group-row label{grid-column:span 1;flex-direction:column;align-items:flex-start;gap:2px}
+        }
+    `;
     const css = `#asf_stm_filters_body{max-height:calc(100vh - 95px);overflow-y:auto}.asf_stm_tabs{width:600px;display:block;margin:40px auto;position:relative}.asf_stm_tabs .asf_stm_tab{float:left;display:block}.asf_stm_tabs .asf_stm_tab>input[type="radio"]{position:absolute;top:-9999px;left:-9999px}.asf_stm_tabs .asf_stm_tab>label{display:block;padding:6px 21px;cursor:pointer;position:relative;color:#FFF;background:#4A83FD}.asf_stm_tabs .asf_stm_content{display:none;overflow:scroll;width:630px;height:380px;padding:5px;position:absolute;left:0;background:#303030;color:#DFDFDF}.asf_stm_tabs>.asf_stm_tab>[id^="asf_stm_tab"]:checked+label{top:0;background:#303030;color:#F5F5F5}.asf_stm_tabs>.asf_stm_tab>[id^="asf_stm_tab"]:checked~ [id^="asf_stm_tab-content"]{display:block}textarea{resize:none}.asf-stm-checkbox,.asf-stm-range{filter:invert(90%) hue-rotate(185deg) brightness(1.2)}.asf-stm-select,.asf-stm-input,.asf-stm-textarea{background-color:#171d25;color:white}.asf-stm-config{height:420px;margin-top:-20px;font-size:12px;margin-left:-20px;width:620px}.asf-stm-span{max-width:45%;width:45%;display:inline-block}.asf-stm-input{max-width:45%}.asf-stm-margin-right{margin-right:.4em}.asf-stm-margin-bottom{margin-bottom:.5em}.friendBlock{width:32%}input.appid-validity:invalid{background:#ff000030}input.appid-validity:valid{background:#00ff0030}.playerAvatar img.stretch:hover{width:85px}.progress-container{display:flex;justify-content:space-between;width:100%;max-width:600px;gap:1rem}.progress-step{display:flex;flex-direction:column;align-items:center;flex:1}.radial-progress{position:relative;width:74px;height:74px;border-radius:50%;background:conic-gradient(#90ba3c var(--progress), #333 0deg);display:flex;align-items:center;justify-content:center;transition:--progress 1s ease}.progress-inner{position:absolute;width:68px;height:68px;background:#121212;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:0.85rem;color:#fff;text-align:center}.full-blue{background:#53a4c4 !important;border-radius:50%;transition:none !important}.label{margin-top:0.5rem;font-size:0.9rem;color:#bbb;text-align:center}@property --progress{syntax:'<angle>';initial-value:0deg;inherits:false}`;
 
     function deepClone(object) {
@@ -1873,43 +1913,59 @@
         tab.className = "asf_stm_tab";
         tab.innerHTML = `<input type="radio" id="asf_stm_tab_groups" name="asf_stm_tabs"><label for="asf_stm_tab_groups">Groups</label>
             <div id="asf_stm_tab-content-groups" class="asf_stm_content">
-            <label><input id="scanGroups" type="checkbox"> Scan saved groups (optional)</label><br>
-            <label>Groups per scan <input id="groupLimit" type="number" min="1" max="100" style="width:60px"></label>
-            <label>Default members/group <input id="groupMemberLimit" type="number" min="1" max="10000" style="width:70px"></label>
-            <label>Default pages/group <input id="groupPageLimit" type="number" min="1" max="1000" style="width:60px"></label>
+            <fieldset><legend>SCAN LIMITS</legend>
+            <div class="asf-stm-group-defaults">
+            <label for="groupLimit">Groups per scan</label><input id="groupLimit" class="asf-stm-input" type="number" min="1" max="100">
+            <label for="groupMemberLimit">Default members/group</label><input id="groupMemberLimit" class="asf-stm-input" type="number" min="1" max="10000">
+            <label for="groupPageLimit">Default pages/group</label><input id="groupPageLimit" class="asf-stm-input" type="number" min="1" max="1000">
+            </div>
             <p>Limits may produce partial scans. Groups do not grant trade permission. Unknown access requires manual review; group offers never auto-send.</p>
-            <input id="addGroupUrl" type="url" placeholder="https://steamcommunity.com/groups/name" style="width:75%">
-            <button id="addGroupButton" type="button">Add group</button>
+            </fieldset>
+            <fieldset><legend>SAVED GROUPS</legend>
+            <div class="asf-stm-group-add">
+            <input id="addGroupUrl" class="asf-stm-input" type="url" aria-label="Steam group URL" placeholder="https://steamcommunity.com/groups/name">
+            <button id="addGroupButton" type="button" class="btn_blue_steamui btn_small"><span>Add group</span></button>
+            </div>
             <div id="groupSettingsStatus" role="status"></div>
             <div id="savedGroups"></div>
+            </fieldset>
+            <fieldset><legend>TRADE URLS</legend>
             <p>Optional Steam trade URLs (one per line, including partner and token). Tokens are stored locally. Only the matching partner receives a token.</p>
-            <textarea id="groupTradeUrls" rows="4" style="width:95%" autocomplete="off"></textarea>
+            <textarea id="groupTradeUrls" class="asf-stm-textarea" aria-label="Steam trade URLs" rows="4" autocomplete="off"></textarea>
+            </fieldset>
             </div>`;
         configDialog.querySelector(".asf_stm_tabs").appendChild(tab);
-        tab.querySelector("#scanGroups").checked = globalSettings.scanGroups;
         for (const key of ["groupLimit", "groupMemberLimit", "groupPageLimit"]) {
             tab.querySelector(`#${key}`).value = globalSettings[key];
         }
         tab.querySelector("#groupTradeUrls").value = globalSettings.tradeUrls.join("\n");
         function addRow(group) {
             const row = document.createElement("div");
+            row.className = "asf-stm-group-row";
             row.dataset.groupUrl = group.url;
             const checkbox = document.createElement("input");
             checkbox.type = "checkbox";
+            checkbox.className = "asf-stm-checkbox";
+            checkbox.setAttribute("aria-label", `Scan ${group.url}`);
             checkbox.checked = group.enabled !== false;
             checkbox.dataset.groupEnabled = "true";
             row.appendChild(checkbox);
-            const label = document.createElement("span");
-            label.textContent = group.url;
+            const label = document.createElement("a");
+            label.className = "asf-stm-group-name";
+            label.href = normalizeGroupUrl(group.url);
+            label.textContent = new URL(label.href).pathname.replace(/^\/|\/$/g, "");
+            label.title = group.url;
+            label.target = "_blank";
+            label.rel = "noopener noreferrer";
             row.appendChild(label);
-            for (const [key, title, max] of [["memberLimit", " Members: ", 10000], ["pageLimit", " Pages: ", 1000]]) {
+            for (const [key, title, max] of [["memberLimit", "Members", 10000], ["pageLimit", "Pages", 1000]]) {
                 const field = document.createElement("label");
                 field.textContent = title;
                 const input = document.createElement("input");
                 input.type = "number";
                 input.min = "1";
                 input.max = String(max);
-                input.style.width = "65px";
+                input.className = "asf-stm-input";
                 input.placeholder = "default";
                 input.dataset.groupLimit = key;
                 input.value = group[key] || "";
@@ -1918,7 +1974,11 @@
             }
             const remove = document.createElement("button");
             remove.type = "button";
-            remove.textContent = "Remove";
+            remove.className = "btn_darkred_white_innerfade btn_small";
+            const removeLabel = document.createElement("span");
+            removeLabel.textContent = "Remove";
+            remove.appendChild(removeLabel);
+            remove.setAttribute("aria-label", `Remove ${group.url}`);
             remove.addEventListener("click", () => row.remove());
             row.appendChild(remove);
             tab.querySelector("#savedGroups").appendChild(row);
@@ -2000,7 +2060,8 @@
 
         const configDialogTemplate = `<div class="asf-stm-config"><ul class="asf_stm_tabs" style="margin: 0;padding: 0;"><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab1" name="asf_stm_tabs" checked><label for="asf_stm_tab1">Matcher</label><div id="asf_stm_tab-content1" class="asf_stm_content"><fieldset><legend>SCAN SOURCES</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Scan ASF bots</span><input type="checkbox" id="scanBots" ${globalSettings.scanBots ? 'checked' : ''} class="asf-stm-checkbox"><br><span class="asf-stm-margin-right">Scan Steam friends</span><input type="checkbox" id="scanFriends" ${globalSettings.scanFriends ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="All enabled sources are scanned together in one run."><img src="${questionmarkURL}"></a></div></fieldset><fieldset><legend>ASF BOTS</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Match with "Any" bots</span><input type="checkbox" id="anyBots" ${globalSettings.anyBots ? 'checked' : ''} class="asf-stm-checkbox"><br><span class="asf-stm-margin-right">Match with "Fair" bots</span><input type="checkbox" id="fairBots" ${globalSettings.fairBots ? 'checked' : ''} class="asf-stm-checkbox"></div><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Minimum items:</span><input type="number" id="botMinItems" value=${globalSettings.botMinItems} min="0" class="asf-stm-input"><br><span class="asf-stm-margin-right">Maximum items:</span><input type="number" id="botMaxItems" value=${globalSettings.botMaxItems} min="0" class="asf-stm-input"><a class="tooltip hover_tooltip" data-tooltip-text="Don't match with bots that has less or more than required limit of items in steam inventory. 0 means no limit on number of items"><img src="${questionmarkURL}"></a></div><div class="asf-stm-margin-bottom">${Array.from({ length: 4 }, (_, i) => createSortSelect(i)).join('')}</div></fieldset><fieldset><legend>INTERFACE</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Game filter pop-up background color:</span><input type="color" id="filterBackgroundColor" value="${filterBG[0]}" class="asf-stm-input" style="margin-right: 1.5em;"><span class="asf-stm-margin-right">opacity:</span><input type="range" id="filterBackgroundAlpha" value=${filterBG[1]} min=0 max=1 step=0.01 class="asf-stm-range" style="height: 4px;"><br></div><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Sort results by game name</span><input type="checkbox" id="sortByName" class="asf-stm-checkbox" ${globalSettings.sortByName ? 'checked' : ''}></div><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Prevent navigation or page leave</span><input type="checkbox" id="preventClose" class="asf-stm-checkbox" ${globalSettings.preventClose ? 'checked' : ''}><a class="tooltip hover_tooltip" data-tooltip-text="A dialog box will prevent navigation and exitting the page to avoid losing progess."><img src="${questionmarkURL}"></a></div></fieldset><fieldset><legend>INVENTORY CACHE</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Enable cache</span><input type="checkbox" id="enableInventoryCache" ${globalSettings.enableInventoryCache ? 'checked' : ''} class="asf-stm-checkbox"><br><span class="asf-stm-span">Refresh after (minutes):</span><input type="number" id="inventoryCacheTtlMinutes" value=${globalSettings.inventoryCacheTtlMinutes} min="1" class="asf-stm-input"><br><span class="asf-stm-span">Max entries:</span><input type="number" id="inventoryCacheMaxEntries" value=${globalSettings.inventoryCacheMaxEntries} min="1" class="asf-stm-input"><br><span class="asf-stm-margin-right">Bypass next scan</span><input type="checkbox" id="forceFreshScan" ${globalSettings.forceFreshScan ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Skips cached scan-target and inventory data once, then turns itself off after that run. Stale inventory stays saved and can refresh later."><img src="${questionmarkURL}"></a></div><div class="asf-stm-margin-bottom"><button id="clearInventoryCache" class="btn_darkred_white_innerfade btn_small asf-stm-margin-right"><span>Clear inventory cache</span></button><span data-asf-stm-cache-status style="color:#8F98A0;"></span></div></fieldset><fieldset style="display: grid;grid-template-columns: repeat(2, 1fr);grid-template-rows: repeat(4, 1fr);gap: 12px;"><legend>SETTINGS</legend><fieldset style="grid-row: span 4 / span 4;grid-column-start: 2;grid-row-start: 1;"><legend>DEVELOPER</legend><div><span class="asf-stm-margin-right">Debug</span><input type="checkbox" id="debug" ${globalSettings.debug ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Enable additional output to console"><img src="${questionmarkURL}"></a></div></fieldset><div><span class="asf-stm-span">Web limiter delay (ms):</span><input type="number" id="weblimiter" value= ${globalSettings.weblimiter} min=0 class="asf-stm-input"></div><div style="grid-column-start: 1;grid-row-start: 2;"><span class="asf-stm-span">Delay on error (ms):</span><input type="number" id="errorLimiter" value=${globalSettings.errorLimiter} min=0 class="asf-stm-input"></div><div style="grid-column-start: 1;grid-row-start: 3;"><span class="asf-stm-span">Max errors:</span><input type="number" id="maxErrors" value=${globalSettings.maxErrors} min=0 class="asf-stm-input"></div><div style="grid-column-start: 1;grid-row-start: 4;"><span class="asf-stm-span">Parallel requests:</span><input type="number" id="scanConcurrency" value=${globalSettings.scanConcurrency} min=1 class="asf-stm-input"><a class="tooltip hover_tooltip" data-tooltip-text="Number of badge requests to fetch at the same time per scan target. Higher values scan faster but increase the risk of rate limiting."><img src="${questionmarkURL}"></a></div></fieldset></div></li><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab2" name="asf_stm_tabs"><label for="asf_stm_tab2">Trade helper</label><div id="asf_stm_tab-content2" class="asf_stm_content"><fieldset><legend>TRADE OFFER MESSAGE</legend><textarea id="tradeMessage" name="tradeMessage" rows="4" cols="60" class="asf-stm-textarea"></textarea><a class="tooltip hover_tooltip" data-tooltip-text="Custom text that will be included automatically with your trade offers created through STM while using this userscript. To remove this functionality, simply delete the text."><img src="${questionmarkURL}"></a></fieldset><fieldset><legend>ACTION AFTER TRADE</legend><label for="after-trade" class="asf-stm-margin-right">After trade...</label><select id="doAfterTrade" name="after-trade" class="asf-stm-select asf-stm-margin-bottom"><option value="NOTHING" ${globalSettings.doAfterTrade === "NOTHING" ? 'selected' : ''}>Do Nothing</option><option value="CLOSE_WINDOW" ${globalSettings.doAfterTrade === "CLOSE_WINDOW" ? 'selected' : ''}>Close window</option><option value="CLICK_OK" ${globalSettings.doAfterTrade === "CLICK_OK" ? 'selected' : ''}>Click OK</option></select><a class="tooltip hover_tooltip" data-tooltip-html="<p>Determines what happens when you complete a trade offer.</p><ul><li><strong>Do nothing</strong>: Will do nothing more than the normal behavior.</li><li><strong>Close window</strong>: Will close the window after the trade offer is sent.</li><li><strong>Click OK</strong>: Will redirect you to the trade offers recap page.</li></ul>"><img src="${questionmarkURL}"></a></fieldset><fieldset><legend>CARDS OFFER</legend><label for="cards-order" class="asf-stm-margin-right">Cards order</label><select id="order" name="cards-order" class="form-control asf-stm-select asf-stm-margin-bottom"><option value="SORT" ${globalSettings.order === "SORT" ? 'selected' : ''}>Sorted</option><option value="RANDOM" ${globalSettings.order === "RANDOM" ? 'selected' : ''}>Random</option><option value="AS_IS" ${globalSettings.order === "AS_IS" ? 'selected' : ''}>As is</option></select><a class="tooltip hover_tooltip" data-tooltip-html="<p>Determines which card is added to trade.</p><ul><li><strong>Sorted</strong>: Will sort cards by their IDs before adding to trade. If you make several trade offers with the same card and one of them is accepted, the rest will have message &quot;cards unavilable to trade&quot;.</li><li><strong>Random</strong>: Will add cards to trade randomly. If you make several trade offers and one of them is accepted, only some of them will be unavilable for trade.</li><li><strong>As is</strong>: Script doesn't change anything in order. Results vary depending on browser, steam servers, weather...</li></ul>"><img src="${questionmarkURL}"></a></fieldset><fieldset><legend>AUTO-SEND TRADE OFFER</legend><div class="asf-stm-margin-bottom"><label for="auto-send" class="asf-stm-margin-right">Enable</label><input type="checkbox" id="autoSend" name="auto-send" value="1" ${globalSettings.autoSend ? 'checked' : ''} class="asf-stm-checkbox asf-stm-margin-bottom"><a class="tooltip hover_tooltip" data-tooltip-text="Makes it possible for the script to automatically send trade offers without any action on your side. This is not recommended as you should always check your trade offers, but, well, this is a possible thing. Please note that incomplete trade offers (missing cards, ...) won't be sent automatically even when this parameter is set to true."><img src="${questionmarkURL}"></a></div></fieldset></div></li><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab3" name="asf_stm_tabs"><label for="asf_stm_tab3">Blacklist</label><div id="asf_stm_tab-content3" class="asf_stm_content"><div class="title_text profile_xp_block_remaining"><h1 style="margin: 0.5em;">Ignored SteamIDs</h1><textarea class="asf-stm-textarea" id="blacklist" name="Blacklist" rows="17" cols="63"></textarea></div></div></li><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab4" name="asf_stm_tabs"><label for="asf_stm_tab4">Whitelist</label><div class="asf_stm_content" id="asf_stm_tab-content4"><div class="title_text profile_xp_block_remaining"><h1 style="margin: 0.5em;">Additional SteamIDs to scan</h1><textarea class="asf-stm-textarea" id="whitelist" name="Whitelist" rows="17" cols="63"></textarea></div></div></li><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab5" name="asf_stm_tabs"><label for="asf_stm_tab5">Scan filters</label><div class="asf_stm_content" id="asf_stm_tab-content5"><fieldset><legend>SETTINGS</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Use scan filters</span><input type="checkbox" id="useScanFilters" ${globalSettings.useScanFilters ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Filter badges to cut short the duration of the scan."><img src="${questionmarkURL}"></a><br><span class="asf-stm-margin-right">Auto add new scan filters</span><input type="checkbox" id="autoAddScanFilters" ${globalSettings.autoAddScanFilters ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Add new scan filters from a fresh scan (clear all your filters)."><img src="${questionmarkURL}"></a><br><span class="asf-stm-margin-right">Auto delete old scan filters</span><input type="checkbox" id="autoDeleteScanFilters" ${globalSettings.autoDeleteScanFilters ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Delete scan filters from badges without duplicates."><img src="${questionmarkURL}"></a></div></fieldset><fieldset><legend>MANAGE SCAN FILTERS</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">App Id:</span><input type="number" id="addScanFilterAppId" step="10" required class="asf-stm-input asf-stm-margin-right appid-validity"><button id="addScanFilterButton" class="btn_blue_steamui btn_small asf-stm-margin-right"><span>Add scan filter</span></button><span id="addScanFilterStatus"></span></div><div class="asf-stm-margin-bottom"><button onclick="document.querySelector('#clearScanFilters').style.visibility = 'visible'" class="btn_plum btn_small asf-stm-margin-right"><span>Clear scan filters</span></button><button id="clearScanFilters" class="btn_darkred_white_innerfade btn_small" style="visibility: hidden;"><span>Are you sure?</span></button></div></fieldset><fieldset><legend>FILTERS</legend><div id="asf-stm-filters" style="column-gap: 4px;display: flex;flex-wrap: wrap;justify-content: flex-start;">${scanFiltersTemplate}</div></fieldset></div></li></ul></div>`;
         let templateElement = document.createElement("template");
-        templateElement.innerHTML = configDialogTemplate;
+        const groupScanSourceTemplate = `<label><span class="asf-stm-margin-right">Scan saved groups</span><input type="checkbox" id="scanGroups" class="asf-stm-checkbox" ${globalSettings.scanGroups ? "checked" : ""}></label>`;
+        templateElement.innerHTML = configDialogTemplate.replace("</fieldset>", `${groupScanSourceTemplate}</fieldset>`);
         let configDialog = templateElement.content.firstChild;
         createGroupSettingsPanel(configDialog);
         configDialog.querySelector("#tradeMessage").value = globalSettings.tradeMessage;
@@ -3786,10 +3847,10 @@
 
         // add our styles to the document's style sheet
         if (typeof GM_addStyle !== "undefined") {
-            GM_addStyle(css);
+            GM_addStyle(css + configCss);
         } else {
             const node = document.createElement("style");
-            node.appendChild(document.createTextNode(css));
+            node.appendChild(document.createTextNode(css + configCss));
             const heads = document.getElementsByTagName("head");
             if (heads.length > 0) {
                 heads[0].appendChild(node);
