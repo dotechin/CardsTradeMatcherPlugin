@@ -11,7 +11,7 @@
 // @match           *://steamcommunity.com/profiles/*/badges
 // @match           *://steamcommunity.com/profiles/*/badges/
 // @match           *://steamcommunity.com/tradeoffer/new/*
-// @version         6.5.0.0
+// @version         6.5.0.1
 // @homepageURL     https://github.com/dotechin/CardsTradeMatcherPlugin
 // @supportURL      https://github.com/dotechin/CardsTradeMatcherPlugin/issues
 // @downloadURL     https://raw.githubusercontent.com/dotechin/CardsTradeMatcherPlugin/main/CardsTradeMatcherPlugin.user.js
@@ -114,6 +114,9 @@
     let groupDiscoveryReports = [];
     let inventoryScanStatuses = {};
     const activeScanRequests = new Set();
+    let steamCooldownUntil = 0;
+    let nextSteamRequestAt = 0;
+    let scanStatus = {progress: "", warning: "", diagnostic: ""};
     let pendingTradeStore = null;
     let completedTradeStore = null;
     let tradeRefreshInFlight = false;
@@ -147,8 +150,13 @@
         .asf-stm-config .asf_stm_tab>input:checked+label{background:#303030;border-bottom-color:#303030;color:#fff}
         .asf-stm-config .asf_stm_content{grid-column:1/-1;grid-row:2;position:static;width:100%;height:min(56vh,480px);min-height:180px;padding:16px;overflow:auto;background:#303030;border:1px solid #354658;border-top:0}
         .asf-stm-config fieldset{min-width:0;margin:0 0 14px;padding:12px;border:1px solid #4a515b;border-radius:3px}
-        .asf-stm-config fieldset label{display:flex;align-items:center;gap:8px;margin-bottom:10px;line-height:1.4}
-        .asf-stm-config fieldset label:last-child{margin-bottom:0}
+        .asf-stm-config .asf-stm-scan-sources{display:flex;flex-direction:column;gap:8px}
+        .asf-stm-config .asf-stm-scan-source{display:flex;align-items:center;gap:8px;min-height:24px;margin:0;line-height:1.4}
+        .asf-stm-config .asf-stm-scan-source label{display:flex;align-items:center;gap:8px;margin:0;min-width:0}
+        .asf-stm-config .asf-stm-scan-source input.asf-stm-checkbox{margin:0;flex-shrink:0}
+        #asf_stm_status{position:static;margin:16px 0;padding:10px;border-top:1px solid #4a515b;line-height:1.5;overflow-wrap:anywhere;color:#c7d5e0}
+        #asf_stm_status [data-status-row=warning]{color:#e5c07b}
+        #asf_stm_status [data-status-row=diagnostic]{color:#ff7b72}
         .asf-stm-config legend{padding:0 6px;color:#66c0f4;font-size:11px;letter-spacing:.06em}
         .asf-stm-config .asf-stm-input,.asf-stm-config .asf-stm-select,.asf-stm-config .asf-stm-textarea{border:1px solid #4a515b;border-radius:3px;padding:6px 8px;max-width:100%;font:inherit}
         .asf-stm-config .asf-stm-input[type=number]{width:100px}
@@ -233,50 +241,176 @@
     }
 
     async function scanDelay(delay, generation) {
-        assertCurrentScan(generation);
-        await new Promise(resolve => setTimeout(resolve, Math.min(60000, Math.max(0, delay))));
+        const deadline = Date.now() + Math.max(0, delay);
+        while (Date.now() < deadline) {
+            assertCurrentScan(generation);
+            await new Promise(resolve => setTimeout(resolve, Math.min(250, deadline - Date.now())));
+        }
         assertCurrentScan(generation);
     }
 
-    async function requestSteam(url, responseType, generation) {
+    async function waitForSteamSlot(generation) {
+        while (true) {
+            assertCurrentScan(generation);
+            const wait = Math.max(steamCooldownUntil, nextSteamRequestAt) - Date.now();
+            if (wait > 0) {
+                await scanDelay(wait, generation);
+                continue;
+            }
+            nextSteamRequestAt = Date.now() + Math.max(Number(globalSettings.weblimiter) || 0, getAdaptiveRequestDelay());
+            return;
+        }
+    }
+
+    function sendPacedSteamRequest(xhr, generation, onCancelled) {
+        waitForSteamSlot(generation).then(() => {
+            assertCurrentScan(generation);
+            activeScanRequests.add(xhr);
+            xhr.addEventListener("loadend", () => {
+                activeScanRequests.delete(xhr);
+                if (generation === scanGeneration && xhr.status === 429) {
+                    recordRequestError();
+                    steamCooldownUntil = Math.max(steamCooldownUntil, Date.now() +
+                        Math.max(5000, Number(globalSettings.errorLimiter) || 1000, retryAfterDelay(xhr.getResponseHeader("Retry-After"))));
+                }
+            });
+            xhr.onabort = () => onCancelled({type: "stopped"});
+            xhr.send();
+        }).catch(onCancelled);
+    }
+
+    function retryAfterDelay(value, now = Date.now()) {
+        if (!value) {
+            return 0;
+        }
+        const seconds = /^\d+(?:\.\d+)?$/.test(value.trim()) ? Number(value) : NaN;
+        const delay = Number.isFinite(seconds) ? seconds * 1000 :
+            /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)/i.test(value.trim()) ? Date.parse(value) - now : 0;
+        return Number.isFinite(delay) ? Math.max(0, delay) : 0;
+    }
+
+    function sanitizeDiagnostic(value, maximum = 700) {
+        return String(value ?? "").replace(/https?:\/\/[^\s<>"']+/gi, match => {
+            try {
+                const url = new URL(match);
+                return `${url.origin}${url.pathname}`;
+            } catch (_) {
+                return "[URL removed]";
+            }
+        }).replace(/(?:token|access_token|key)\s*[=:]\s*[^&\s<>"']+/gi, "[credential removed]")
+            .replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, maximum);
+    }
+
+    function requestFailure(url, stage, response, attempts) {
+        const path = new URL(url).pathname;
+        const status = Number(response.status) || 0;
+        const event = response.event || "network";
+        const detail = status ? `HTTP ${status}${event !== "load" ? ` (${event})` : ""}` : `${event}; no HTTP status`;
+        const guidance = status === 429 ? "Server reported rate limiting (429). Wait before retrying; reduce parallel requests." :
+            status === 401 || status === 403 ? "Check Steam sign-in and inventory/member-list privacy or permissions." :
+            status === 404 ? "Check that the profile/group or endpoint still exists." :
+            status >= 400 && status < 500 && status !== 408 ? "Check the request/endpoint; this response is not retried." :
+            "Check connectivity and Steam/ASF availability. Try parallel requests 1 and web limiter 1500 ms; this is not a guaranteed fix.";
+        return {
+            type: status === 401 || status === 403 ? "private" : "failed",
+            stage: sanitizeDiagnostic(stage), path, status, event, attempts,
+            message: `${sanitizeDiagnostic(stage)}: ${path} — ${detail}, ${attempts} attempt(s). ${guidance}`,
+        };
+    }
+
+    async function requestWithRetries(url, stage, generation, send) {
         const retries = boundedRetryLimit(globalSettings.maxErrors);
         for (let attempt = 0; attempt <= retries; attempt++) {
             assertCurrentScan(generation);
-            if (attempt > 0) {
-                await scanDelay(Math.max(1000, Number(globalSettings.errorLimiter) || 1000) * attempt, generation);
+            const steam = new URL(url).hostname === "steamcommunity.com";
+            if (steam) {
+                await waitForSteamSlot(generation);
             }
-            const response = await new Promise(resolve => {
+            assertCurrentScan(generation);
+            let response;
+            try {
+                response = await send();
+            } catch (error) {
+                if (error?.type === "stopped") {
+                    throw error;
+                }
+                response = {status: 0, event: "network"};
+            }
+            assertCurrentScan(generation);
+            if (response.event === "load" && response.status === 200 && response.body != null) {
+                recordRequestSuccess();
+                return response.body;
+            }
+            recordRequestError();
+            const failure = requestFailure(url, stage, response, attempt + 1);
+            const transient = response.event === "network" || response.event === "timeout" ||
+                !response.status || response.status === 408 || response.status === 429 || response.status >= 500;
+            const delay = Math.max(1000, Number(globalSettings.errorLimiter) || 1000) * (attempt + 1);
+            const backoff = response.status === 429 ?
+                Math.max(delay, 5000 * Math.pow(2, attempt), retryAfterDelay(response.retryAfter)) : delay;
+            // Keep the cooldown even on exhaustion so other workers/refreshes cannot storm Steam.
+            if (steam && transient) {
+                steamCooldownUntil = Math.max(steamCooldownUntil, Date.now() + backoff);
+            }
+            if (!transient || attempt === retries) {
+                throw failure;
+            }
+            await scanDelay(backoff, generation);
+        }
+    }
+
+    async function requestSteam(url, responseType, generation, stage = "Steam request") {
+        return requestWithRetries(url, stage, generation, () => {
+            return new Promise(resolve => {
                 const xhr = new XMLHttpRequest();
                 xhr.open("GET", url, true);
                 xhr.responseType = responseType;
                 xhr.timeout = 30000;
                 activeScanRequests.add(xhr);
-                const finish = () => {
+                const finish = event => {
                     activeScanRequests.delete(xhr);
-                    resolve({status: xhr.status, body: xhr.response});
+                    resolve({status: xhr.status, body: xhr.response, event,
+                        retryAfter: xhr.getResponseHeader("Retry-After")});
                 };
-                xhr.onload = finish;
-                xhr.onerror = finish;
-                xhr.ontimeout = finish;
-                xhr.onabort = finish;
+                xhr.onload = () => finish("load");
+                xhr.onerror = () => finish("network");
+                xhr.ontimeout = () => finish("timeout");
+                xhr.onabort = () => finish("abort");
                 xhr.send();
             });
-            assertCurrentScan(generation);
-            if (response.status === 200 && response.body !== null) {
-                recordRequestSuccess();
-                return response.body;
-            }
-            if (response.status === 401 || response.status === 403) {
-                throw {type: "private", message: "Inventory or member list is private/unavailable"};
-            }
-            recordRequestError();
-            if (response.status === 429) {
-                await scanDelay(Math.min(60000, 5000 * Math.pow(2, attempt)), generation);
-            } else if (response.status >= 400 && response.status < 500) {
-                break;
-            }
-        }
-        throw {type: "failed", message: "Steam request failed after bounded retries"};
+        });
+    }
+
+    async function requestSource(url, stage, generation) {
+        return requestWithRetries(url, stage, generation, () => {
+            return new Promise(resolve => {
+                let handle;
+                let finished = false;
+                const finish = (response, event) => {
+                    if (finished) {
+                        return;
+                    }
+                    finished = true;
+                    activeScanRequests.delete(handle);
+                    resolve({status: response?.status || 0, body: response?.responseText ?? response?.response, event,
+                        retryAfter: response?.responseHeaders?.match(/^Retry-After:\s*(.+)$/im)?.[1]?.trim()});
+                };
+                handle = getRequestFunc()({
+                    method: "GET", url, timeout: 30000,
+                    headers: {"User-Agent": "ASF-STM/" + GM_info.version},
+                    onload: response => finish(response, "load"),
+                    onerror: response => finish(response, "network"),
+                    ontimeout: response => finish(response, "timeout"),
+                    onabort: response => finish(response, "abort"),
+                });
+                if (!finished && typeof handle?.abort === "function") {
+                    activeScanRequests.add(handle);
+                }
+                if (typeof handle?.catch === "function") {
+                    handle.catch(response => finish(response, "network"));
+                }
+            });
+        });
     }
 
     async function resolveOwnSteamID64(generation) {
@@ -288,7 +422,7 @@
         if (isUserSteamID64(numericId)) {
             ownSteamID64 = numericId;
         } else {
-            const profile = await requestSteam(`https://steamcommunity.com/${sanitizeSteamProfilePath(myProfileLink)}/?xml=1`, "document", generation);
+            const profile = await requestSteam(`https://steamcommunity.com/${sanitizeSteamProfilePath(myProfileLink)}/?xml=1`, "document", generation, "Verify your profile");
             const id = profile.querySelector("profile > steamID64")?.textContent.trim();
             if (!isUserSteamID64(id)) {
                 throw {type: "failed", message: "Could not verify your SteamID64"};
@@ -299,18 +433,64 @@
     }
 
     function showDiscoveryProgress(message) {
+        message = sanitizeDiagnostic(message);
         const button = document.getElementById("asf_stm_button_div");
         if (button) {
             button.setAttribute("title", message);
         }
-        let status = document.querySelector("[data-asf-stm-discovery]");
+        scanStatus.progress = message;
+        renderScanStatus();
+        updateResultSummary();
+    }
+
+    function renderScanStatus() {
+        const host = document.getElementsByClassName("maincontent")[0];
+        if (!host) {
+            return;
+        }
+        let status = document.getElementById("asf_stm_status");
         if (!status) {
             status = document.createElement("div");
-            status.dataset.asfStmDiscovery = "true";
-            document.getElementsByClassName("profile_small_header_texture")[0]?.appendChild(status);
+            status.id = "asf_stm_status";
+            status.setAttribute("role", "status");
+            status.setAttribute("aria-live", "polite");
+            status.setAttribute("aria-atomic", "true");
         }
-        status.textContent = message;
-        updateResultSummary();
+        host.appendChild(status);
+        status.textContent = "";
+        for (const key of ["progress", "diagnostic", "warning"]) {
+            const row = document.createElement("div");
+            row.dataset.statusRow = key;
+            row.textContent = scanStatus[key];
+            row.hidden = !scanStatus[key];
+            status.appendChild(row);
+        }
+    }
+
+    function showScanDiagnostic(error) {
+        scanStatus.diagnostic = sanitizeDiagnostic(error?.message || "Request failed; no HTTP status available");
+        renderScanStatus();
+    }
+
+    function sourceWarning(cache) {
+        const reports = Array.isArray(cache?.sourceReports) ? cache.sourceReports : [];
+        const failures = reports.filter(report => !["complete", "limited", "partial"].includes(report.status))
+            .map(report => `${report.name}: ${report.detail || report.status}`);
+        const groups = Array.isArray(cache?.groupReports) ? cache.groupReports : [];
+        const limits = groups.filter(report => report.kind === "limit" || /limit/.test(report.status));
+        groups.filter(report => report.status !== "complete" && report.status !== "discovering" && !limits.includes(report))
+            .forEach(report => failures.push(`Groups (${report.name}): ${report.detail || report.status}`));
+        const parts = [];
+        if (failures.length) {
+            parts.push(`Warning: source discovery incomplete — ${failures.join("; ")}. Successfully discovered targets are retained.`);
+        }
+        if (limits.length) {
+            parts.push(`Partial by configured limits — ${limits.map(report => `${report.name}: ${report.status}`).join("; ")}.`);
+        }
+        if (cache?.partialFailure && !reports.length && !failures.length) {
+            parts.push("Warning: cached discovery was partial; older cache has no source details. Bypass the next scan cache to diagnose.");
+        }
+        return sanitizeDiagnostic(parts.join(" "), 20000);
     }
 
     async function discoverGroupTargets(generation) {
@@ -321,7 +501,7 @@
         const targets = [];
         groupDiscoveryReports = [];
         if (groups.length > limit) {
-            groupDiscoveryReports.push({name: "Groups", members: 0, pages: 0, status: `partial: ${groups.length - limit} groups omitted by limit`});
+            groupDiscoveryReports.push({name: "Groups", members: 0, pages: 0, kind: "limit", status: `partial: ${groups.length - limit} groups omitted by limit`});
         }
         for (const group of groups.slice(0, limit)) {
             assertCurrentScan(generation);
@@ -335,7 +515,7 @@
                 let totalPages = 1;
                 let totalMembers = 0;
                 for (let page = 1; page <= totalPages && page <= pageLimit; page++) {
-                    const xml = await requestSteam(`${groupUrl}/memberslistxml/?xml=1&p=${page}`, "document", generation);
+                    const xml = await requestSteam(`${groupUrl}/memberslistxml/?xml=1&p=${page}`, "document", generation, "Groups member discovery");
                     const currentPage = Number(xml.querySelector("currentPage")?.textContent);
                     totalPages = Number(xml.querySelector("totalPages")?.textContent);
                     totalMembers = Number(xml.querySelector("memberCount")?.textContent);
@@ -376,12 +556,14 @@
                         page === totalPages ? (seen.size < totalMembers ? "partial: member list incomplete" : "complete") : "discovering";
                     showDiscoveryProgress(`${report.name}: ${report.pages}/${totalPages} pages; ${report.members} eligible members; ${report.status}`);
                     if (capped || (report.members >= memberLimit && page < totalPages)) {
+                        report.kind = "limit";
                         break;
                     }
                     if (page === pageLimit && page < totalPages) {
                         report.status = "partial: page limit";
+                        report.kind = "limit";
                     }
-                    if (page < totalPages) {
+                    if (page < totalPages && page < pageLimit) {
                         await scanDelay(getAdaptiveRequestDelay(), generation);
                     }
                 }
@@ -390,6 +572,9 @@
                     throw error;
                 }
                 report.status = `partial: ${error?.type || "failed"}`;
+                report.kind = "failure";
+                report.detail = sanitizeDiagnostic(error?.message || report.status);
+                report.diagnostic = error?.path ? {stage: error.stage, path: error.path, status: error.status, event: error.event, attempts: error.attempts} : undefined;
             }
         }
         return targets;
@@ -418,7 +603,8 @@
         let cursor = "";
         let expectedTotal = null;
         for (let page = 0; page < 100; page++) {
-            const data = await requestSteam(`https://steamcommunity.com/inventory/${steamID64}/753/6?l=english&count=5000${cursor ? `&start_assetid=${cursor}` : ""}`, "json", generation);
+            const data = await requestSteam(`https://steamcommunity.com/inventory/${steamID64}/753/6?l=english&count=5000${cursor ? `&start_assetid=${cursor}` : ""}`, "json", generation,
+                steamID64 === ownSteamID64 ? "Your verified inventory" : "Target verified inventory");
             if (!data || (data.success !== 1 && data.success !== true)) {
                 throw {type: /private|permission|access/i.test(data?.Error || data?.error || "") ? "private" : "failed", message: "Steam inventory not available"};
             }
@@ -1673,7 +1859,7 @@
                     }
                 };
                 xhr.ontimeout = xhr.onerror;
-                xhr.send();
+                sendPacedSteamRequest(xhr, refreshScanGeneration, done);
             }
             refreshBadge(0);
         });
@@ -1777,7 +1963,7 @@
                     }
                 };
                 xhr.ontimeout = xhr.onerror;
-                xhr.send();
+                sendPacedSteamRequest(xhr, refreshScanGeneration, done);
             }
             refreshBadge(0);
         });
@@ -1826,7 +2012,10 @@
                 finalizeBadgeCollection(myBadges, false);
                 setOwnInventoryStatus(`refreshed ${snapshot.status}`);
                 renderStoredMatches();
-            }, () => setOwnInventoryStatus("stale (refresh failed; refresh manually)"), snapshot => {
+            }, error => {
+                setOwnInventoryStatus("stale (refresh failed; refresh manually)");
+                showScanDiagnostic(error);
+            }, snapshot => {
                 const badges = rebuildBadges(snapshot);
                 finalizeBadgeCollection(badges, true);
                 return badges.length === 0;
@@ -1839,7 +2028,8 @@
                 finalizeOwnInventoryAfterLoad();
             }).catch(error => {
                 if (generation === scanGeneration) {
-                    stopEventCleanup(error?.message || (error?.type === "stopped" ? "User interrupt" : "Your inventory is unavailable"));
+                    showScanDiagnostic(error);
+                    stopEventCleanup(error?.type === "stopped" ? "User interrupt" : "Your verified inventory is unavailable; scan stopped safely");
                 }
             });
             return;
@@ -2061,8 +2251,12 @@
 
         const configDialogTemplate = `<div class="asf-stm-config"><ul class="asf_stm_tabs" style="margin: 0;padding: 0;"><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab1" name="asf_stm_tabs" checked><label for="asf_stm_tab1">Matcher</label><div id="asf_stm_tab-content1" class="asf_stm_content"><fieldset><legend>SCAN SOURCES</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Bots</span><input type="checkbox" id="scanBots" ${globalSettings.scanBots ? 'checked' : ''} class="asf-stm-checkbox"><br><span class="asf-stm-margin-right">Friends</span><input type="checkbox" id="scanFriends" ${globalSettings.scanFriends ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="All enabled sources are scanned together in one run."><img src="${questionmarkURL}"></a></div></fieldset><fieldset><legend>ASF BOTS</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Match with "Any" bots</span><input type="checkbox" id="anyBots" ${globalSettings.anyBots ? 'checked' : ''} class="asf-stm-checkbox"><br><span class="asf-stm-margin-right">Match with "Fair" bots</span><input type="checkbox" id="fairBots" ${globalSettings.fairBots ? 'checked' : ''} class="asf-stm-checkbox"></div><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Minimum items:</span><input type="number" id="botMinItems" value=${globalSettings.botMinItems} min="0" class="asf-stm-input"><br><span class="asf-stm-margin-right">Maximum items:</span><input type="number" id="botMaxItems" value=${globalSettings.botMaxItems} min="0" class="asf-stm-input"><a class="tooltip hover_tooltip" data-tooltip-text="Don't match with bots that has less or more than required limit of items in steam inventory. 0 means no limit on number of items"><img src="${questionmarkURL}"></a></div><div class="asf-stm-margin-bottom">${Array.from({ length: 4 }, (_, i) => createSortSelect(i)).join('')}</div></fieldset><fieldset><legend>INTERFACE</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Game filter pop-up background color:</span><input type="color" id="filterBackgroundColor" value="${filterBG[0]}" class="asf-stm-input" style="margin-right: 1.5em;"><span class="asf-stm-margin-right">opacity:</span><input type="range" id="filterBackgroundAlpha" value=${filterBG[1]} min=0 max=1 step=0.01 class="asf-stm-range" style="height: 4px;"><br></div><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Sort results by game name</span><input type="checkbox" id="sortByName" class="asf-stm-checkbox" ${globalSettings.sortByName ? 'checked' : ''}></div><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Prevent navigation or page leave</span><input type="checkbox" id="preventClose" class="asf-stm-checkbox" ${globalSettings.preventClose ? 'checked' : ''}><a class="tooltip hover_tooltip" data-tooltip-text="A dialog box will prevent navigation and exitting the page to avoid losing progess."><img src="${questionmarkURL}"></a></div></fieldset><fieldset><legend>INVENTORY CACHE</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Enable cache</span><input type="checkbox" id="enableInventoryCache" ${globalSettings.enableInventoryCache ? 'checked' : ''} class="asf-stm-checkbox"><br><span class="asf-stm-span">Refresh after (minutes):</span><input type="number" id="inventoryCacheTtlMinutes" value=${globalSettings.inventoryCacheTtlMinutes} min="1" class="asf-stm-input"><br><span class="asf-stm-span">Max entries:</span><input type="number" id="inventoryCacheMaxEntries" value=${globalSettings.inventoryCacheMaxEntries} min="1" class="asf-stm-input"><br><span class="asf-stm-margin-right">Bypass next scan</span><input type="checkbox" id="forceFreshScan" ${globalSettings.forceFreshScan ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Skips cached scan-target and inventory data once, then turns itself off after that run. Stale inventory stays saved and can refresh later."><img src="${questionmarkURL}"></a></div><div class="asf-stm-margin-bottom"><button id="clearInventoryCache" class="btn_darkred_white_innerfade btn_small asf-stm-margin-right"><span>Clear inventory cache</span></button><span data-asf-stm-cache-status style="color:#8F98A0;"></span></div></fieldset><fieldset style="display: grid;grid-template-columns: repeat(2, 1fr);grid-template-rows: repeat(4, 1fr);gap: 12px;"><legend>SETTINGS</legend><fieldset style="grid-row: span 4 / span 4;grid-column-start: 2;grid-row-start: 1;"><legend>DEVELOPER</legend><div><span class="asf-stm-margin-right">Debug</span><input type="checkbox" id="debug" ${globalSettings.debug ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Enable additional output to console"><img src="${questionmarkURL}"></a></div></fieldset><div><span class="asf-stm-span">Web limiter delay (ms):</span><input type="number" id="weblimiter" value= ${globalSettings.weblimiter} min=0 class="asf-stm-input"></div><div style="grid-column-start: 1;grid-row-start: 2;"><span class="asf-stm-span">Delay on error (ms):</span><input type="number" id="errorLimiter" value=${globalSettings.errorLimiter} min=0 class="asf-stm-input"></div><div style="grid-column-start: 1;grid-row-start: 3;"><span class="asf-stm-span">Max errors:</span><input type="number" id="maxErrors" value=${globalSettings.maxErrors} min=0 class="asf-stm-input"></div><div style="grid-column-start: 1;grid-row-start: 4;"><span class="asf-stm-span">Parallel requests:</span><input type="number" id="scanConcurrency" value=${globalSettings.scanConcurrency} min=1 class="asf-stm-input"><a class="tooltip hover_tooltip" data-tooltip-text="Number of badge requests to fetch at the same time per scan target. Higher values scan faster but increase the risk of rate limiting."><img src="${questionmarkURL}"></a></div></fieldset></div></li><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab2" name="asf_stm_tabs"><label for="asf_stm_tab2">Trade helper</label><div id="asf_stm_tab-content2" class="asf_stm_content"><fieldset><legend>TRADE OFFER MESSAGE</legend><textarea id="tradeMessage" name="tradeMessage" rows="4" cols="60" class="asf-stm-textarea"></textarea><a class="tooltip hover_tooltip" data-tooltip-text="Custom text that will be included automatically with your trade offers created through STM while using this userscript. To remove this functionality, simply delete the text."><img src="${questionmarkURL}"></a></fieldset><fieldset><legend>ACTION AFTER TRADE</legend><label for="after-trade" class="asf-stm-margin-right">After trade...</label><select id="doAfterTrade" name="after-trade" class="asf-stm-select asf-stm-margin-bottom"><option value="NOTHING" ${globalSettings.doAfterTrade === "NOTHING" ? 'selected' : ''}>Do Nothing</option><option value="CLOSE_WINDOW" ${globalSettings.doAfterTrade === "CLOSE_WINDOW" ? 'selected' : ''}>Close window</option><option value="CLICK_OK" ${globalSettings.doAfterTrade === "CLICK_OK" ? 'selected' : ''}>Click OK</option></select><a class="tooltip hover_tooltip" data-tooltip-html="<p>Determines what happens when you complete a trade offer.</p><ul><li><strong>Do nothing</strong>: Will do nothing more than the normal behavior.</li><li><strong>Close window</strong>: Will close the window after the trade offer is sent.</li><li><strong>Click OK</strong>: Will redirect you to the trade offers recap page.</li></ul>"><img src="${questionmarkURL}"></a></fieldset><fieldset><legend>CARDS OFFER</legend><label for="cards-order" class="asf-stm-margin-right">Cards order</label><select id="order" name="cards-order" class="form-control asf-stm-select asf-stm-margin-bottom"><option value="SORT" ${globalSettings.order === "SORT" ? 'selected' : ''}>Sorted</option><option value="RANDOM" ${globalSettings.order === "RANDOM" ? 'selected' : ''}>Random</option><option value="AS_IS" ${globalSettings.order === "AS_IS" ? 'selected' : ''}>As is</option></select><a class="tooltip hover_tooltip" data-tooltip-html="<p>Determines which card is added to trade.</p><ul><li><strong>Sorted</strong>: Will sort cards by their IDs before adding to trade. If you make several trade offers with the same card and one of them is accepted, the rest will have message &quot;cards unavilable to trade&quot;.</li><li><strong>Random</strong>: Will add cards to trade randomly. If you make several trade offers and one of them is accepted, only some of them will be unavilable for trade.</li><li><strong>As is</strong>: Script doesn't change anything in order. Results vary depending on browser, steam servers, weather...</li></ul>"><img src="${questionmarkURL}"></a></fieldset><fieldset><legend>AUTO-SEND TRADE OFFER</legend><div class="asf-stm-margin-bottom"><label for="auto-send" class="asf-stm-margin-right">Enable</label><input type="checkbox" id="autoSend" name="auto-send" value="1" ${globalSettings.autoSend ? 'checked' : ''} class="asf-stm-checkbox asf-stm-margin-bottom"><a class="tooltip hover_tooltip" data-tooltip-text="Makes it possible for the script to automatically send trade offers without any action on your side. This is not recommended as you should always check your trade offers, but, well, this is a possible thing. Please note that incomplete trade offers (missing cards, ...) won't be sent automatically even when this parameter is set to true."><img src="${questionmarkURL}"></a></div></fieldset></div></li><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab3" name="asf_stm_tabs"><label for="asf_stm_tab3">Blacklist</label><div id="asf_stm_tab-content3" class="asf_stm_content"><div class="title_text profile_xp_block_remaining"><h1 style="margin: 0.5em;">Ignored SteamIDs</h1><textarea class="asf-stm-textarea" id="blacklist" name="Blacklist" rows="17" cols="63"></textarea></div></div></li><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab4" name="asf_stm_tabs"><label for="asf_stm_tab4">Whitelist</label><div class="asf_stm_content" id="asf_stm_tab-content4"><div class="title_text profile_xp_block_remaining"><h1 style="margin: 0.5em;">Additional SteamIDs to scan</h1><textarea class="asf-stm-textarea" id="whitelist" name="Whitelist" rows="17" cols="63"></textarea></div></div></li><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab5" name="asf_stm_tabs"><label for="asf_stm_tab5">Scan filters</label><div class="asf_stm_content" id="asf_stm_tab-content5"><fieldset><legend>SETTINGS</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Use scan filters</span><input type="checkbox" id="useScanFilters" ${globalSettings.useScanFilters ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Filter badges to cut short the duration of the scan."><img src="${questionmarkURL}"></a><br><span class="asf-stm-margin-right">Auto add new scan filters</span><input type="checkbox" id="autoAddScanFilters" ${globalSettings.autoAddScanFilters ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Add new scan filters from a fresh scan (clear all your filters)."><img src="${questionmarkURL}"></a><br><span class="asf-stm-margin-right">Auto delete old scan filters</span><input type="checkbox" id="autoDeleteScanFilters" ${globalSettings.autoDeleteScanFilters ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Delete scan filters from badges without duplicates."><img src="${questionmarkURL}"></a></div></fieldset><fieldset><legend>MANAGE SCAN FILTERS</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">App Id:</span><input type="number" id="addScanFilterAppId" step="10" required class="asf-stm-input asf-stm-margin-right appid-validity"><button id="addScanFilterButton" class="btn_blue_steamui btn_small asf-stm-margin-right"><span>Add scan filter</span></button><span id="addScanFilterStatus"></span></div><div class="asf-stm-margin-bottom"><button onclick="document.querySelector('#clearScanFilters').style.visibility = 'visible'" class="btn_plum btn_small asf-stm-margin-right"><span>Clear scan filters</span></button><button id="clearScanFilters" class="btn_darkred_white_innerfade btn_small" style="visibility: hidden;"><span>Are you sure?</span></button></div></fieldset><fieldset><legend>FILTERS</legend><div id="asf-stm-filters" style="column-gap: 4px;display: flex;flex-wrap: wrap;justify-content: flex-start;">${scanFiltersTemplate}</div></fieldset></div></li></ul></div>`;
         let templateElement = document.createElement("template");
-        const groupScanSourceTemplate = `<label><span class="asf-stm-margin-right">Groups</span><input type="checkbox" id="scanGroups" class="asf-stm-checkbox" ${globalSettings.scanGroups ? "checked" : ""}></label>`;
-        templateElement.innerHTML = configDialogTemplate.replace("</fieldset>", `${groupScanSourceTemplate}</fieldset>`);
+        const scanSourcesTemplate = `<fieldset><legend>SCAN SOURCES</legend><div class="asf-stm-scan-sources">${[
+            ["scanBots", "ASF bots", "Discover matching bots from the ASF listing."],
+            ["scanFriends", "Friends", "All enabled sources are scanned together in one run."],
+            ["scanGroups", "Groups", "Discover members of enabled saved Steam groups within configured limits."],
+        ].map(([id, name, tooltip]) => `<div class="asf-stm-scan-source"><label for="${id}"><input type="checkbox" id="${id}" class="asf-stm-checkbox" ${globalSettings[id] ? "checked" : ""}><span>${name}</span></label><a class="tooltip hover_tooltip" data-tooltip-text="${tooltip}"><img src="${questionmarkURL}" alt="Help"></a></div>`).join("")}</div></fieldset>`;
+        templateElement.innerHTML = configDialogTemplate.replace(/<fieldset><legend>SCAN SOURCES<\/legend>.*?<\/fieldset>/, scanSourcesTemplate);
         let configDialog = templateElement.content.firstChild;
         createGroupSettingsPanel(configDialog);
         configDialog.querySelector("#tradeMessage").value = globalSettings.tradeMessage;
@@ -2824,7 +3018,7 @@
                     }
                 };
                 xhr.ontimeout = xhr.onerror;
-                xhr.send();
+                sendPacedSteamRequest(xhr, generation, reject);
             }
             attempt();
         });
@@ -2993,7 +3187,7 @@
                     }
                 };
                 xhr.ontimeout = xhr.onerror;
-                xhr.send();
+                sendPacedSteamRequest(xhr, generation, reject);
             }
             attempt();
         });
@@ -3069,8 +3263,9 @@
             target.NormalCardCount = Object.values(snapshot.counts).reduce((sum, card) => sum + card.count, 0);
             setTargetInventoryStatus(target, `refreshed ${snapshot.status}`);
             renderStoredMatches();
-        }, () => {
+        }, error => {
             setTargetInventoryStatus(target, "stale (refresh failed; refresh manually)");
+            showScanDiagnostic(error);
             renderStoredMatches();
         }).then(snapshot => {
             assertCurrentScan(generation);
@@ -3091,6 +3286,7 @@
                 return;
             }
             setTargetInventoryStatus(target, error?.type === "private" ? "private/unavailable" : "failed");
+            showScanDiagnostic(error);
             progressRadials.botBadges.textElement.textContent = target.InventoryStatus;
             updateProgress("bots");
             updateResultSummary();
@@ -3309,7 +3505,7 @@
             }
         };
         xhr.ontimeout = xhr.onerror;
-        xhr.send();
+        sendPacedSteamRequest(xhr, generation, () => {});
     }
 
     function addScanFilterEventHandler() {
@@ -3460,7 +3656,7 @@
             cacheStats.mode = isInventoryCacheEnabled() ? "enabled" : "disabled";
             updateCacheStatus();
         }
-        console.log(`Stopping: ${reason}`);
+        console.log(`Stopping: ${sanitizeDiagnostic(reason)}`);
         showDiscoveryProgress(reason);
     }
 
@@ -3473,6 +3669,9 @@
             groupDiscoveryReports = [];
             inventoryScanStatuses = {};
             inventoryRefreshQueue.length = 0;
+            scanStatus = {progress: "", warning: "", diagnostic: ""};
+            resetAdaptiveRequestDelay();
+            renderScanStatus();
         }
         if (globalSettings.preventClose) {
             window.addEventListener('beforeunload', function (e) {
@@ -3486,6 +3685,10 @@
         }
         cacheBypassActive = globalSettings.forceFreshScan === true;
         resetCacheStats();
+        if (targetsReady === true || isCacheValid(bots, enabledSources)) {
+            scanStatus.warning = sourceWarning(bots);
+            renderScanStatus();
+        }
         if (targetsReady !== true && (cacheBypassActive || !isCacheValid(bots, enabledSources) || bots.Result === undefined || bots.Success !== true)) {
             disableButton();
             document.querySelector('#asf_stm_stop_div').hidden = false;
@@ -3512,8 +3715,9 @@
         let mainContentDiv = document.getElementsByClassName("maincontent")[0];
         mainContentDiv.textContent = "";
         mainContentDiv.style.width = "90%";
-        const partialSourceWarning = bots.partialFailure ? `<div style="color:#e5c07b;text-align:center;margin-bottom:0.75rem;">Warning: one or more enabled sources could not be fetched; results may be partial.</div>` : "";
+        const partialSourceWarning = "";
         mainContentDiv.innerHTML = `<div class="profile_badges_header"><div id="throbber"><div class="LoadingWrapper"><div class="LoadingThrobber"><div class="Bar Bar1"></div><div class="Bar Bar2"></div><div class="Bar Bar3"></div></div></div></div><div style="display: flex;flex-direction: column;align-items: center;">${partialSourceWarning}<div class="progress-container"><div class="progress-step"><div id="scan-pages-radial" class="radial-progress" style="--progress: 0deg;"><div id="scan-pages-text" class="progress-inner">?</div></div><span id="scan-pages-label" class="label">${globalSettings.useScanFilters && globalSettings.scanFilters.filter(x => x.active).length ? 'Filters' : 'Badge Pages'}</span></div><div class="progress-step"><div id="scan-badges-radial" class="radial-progress" style="--progress: 0deg;"><div id="scan-badges-text" class="progress-inner">?</div></div><span id="scan-badges-label" class="label">Badges</span></div><div class="progress-step"><div id="scan-bots-radial" class="radial-progress" style="--progress: 0deg;"><div id="scan-bots-text" class="progress-inner">?</div></div><span id="scan-bots-label" class="label">Targets</span></div><div class="progress-step"><div id="bots-badges-radial" class="radial-progress" style="--progress: 0deg;"><div id="bots-badges-text" class="progress-inner">?</div></div><span id="bots-badges-label" class="label">Target Badges</span></div></div></div></div><div id="asf_stm_results_summary" style="margin:1rem 0 0.75rem;text-align:center;color:#c7d5e0;"></div><div id="asf_stm_results_controls" style="display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;justify-content:center;margin-bottom:1rem;"><span style="color:#8F98A0;">Show:</span><a href="#" data-result-filter="all" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">All</a><a href="#" data-result-filter="asf" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">ASF only</a><a href="#" data-result-filter="friends" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">Friends only</a><a href="#" data-result-filter="shared" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">Shared</a><span style="color:#8F98A0;margin-left:0.5rem;">Order:</span><a href="#" data-result-grouping="combined" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">Combined</a><a href="#" data-result-grouping="source" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">By source</a><span style="color:#8F98A0;margin-left:0.5rem;">Trades:</span><a href="#" data-trade-action="refresh-completed" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">Refresh completed</a><a href="#" data-trade-action="clear-tracked" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">Clear tracked</a><span data-asf-stm-trade-status style="color:#8F98A0;margin-left:0.5rem;"></span></div><div id="asf_stm_results_body" style="display:flex;flex-direction:column;gap:0.75rem;"></div><div id="asf_stm_filters" style="position: fixed; z-index: 1000; right: 5px; bottom: 45px; transition-duration: 500ms; transition-timing-function: ease; margin-right: -50%; padding: 5px; max-width: 40%; display: inline-block; border-radius: 2px; background:rgba(23,26,33,0.8); color: #67c1f5;"><div style="white-space: nowrap;">Select:<a id="asf_stm_filter_all" class="commentthread_pagelinks">all</a><a id="asf_stm_filter_none" class="commentthread_pagelinks">none</a><a id="asf_stm_filter_invert" class="commentthread_pagelinks">invert</a></div><hr /><div id="asf_stm_filters_body"><span id="asf_stm_placeholder" style="margin-right: 15px;">No matches to filter</span></div></div><div style="position: fixed;z-index: 1000;right: 5px;bottom: 5px;" id="asf_stm_filters_button_div"><a id="asf_stm_filters_button" class="btnv6_blue_hoverfade btn_medium"><span>Filters</span></a></div>`;
+        renderScanStatus();
         document.getElementById("asf_stm_filters").style.background = sanitizeFilterBackgroundColor(globalSettings.filterBackgroundColor);
         if (globalSettings.scanGroups) {
             const groupControl = document.createElement("a");
@@ -3636,96 +3840,49 @@
     function fetchBots() {
         const generation = scanGeneration;
         const enabledSources = getEnabledSources();
-        const requestFunc = getRequestFunc();
 
-        function fetchAsfTargets() {
-            return new Promise((resolve, reject) => {
-                requestFunc({
-                    method: "GET",
-                    timeout: 30000,
-                    url: "https://asf.justarchi.net/Api/Listing/Bots",
-                    headers: {
-                        "User-Agent": "ASF-STM/" + GM_info.version,
-                    },
-                    onload: function (response) {
-                        if (response.status !== 200) {
-                            reject(new Error(`Can't fetch ASF bots: ${response.status}`));
-                            return;
-                        }
-                        try {
-                            let re = /("SteamID":)(\d+)/g;
-                            let fixedJson = (response.responseText ?? response.response).replace(re, '$1"$2"');
-                            let parsed = JSON.parse(fixedJson);
-                            if (!parsed.Success) {
-                                reject(new Error(parsed.Message || "ASF backend did not return success"));
-                                return;
-                            }
-                            resolve(parsed.Result.filter(bot => (bot.MatchableTypes ?? []).includes(5)).map(normalizeBot));
-                        } catch (e) {
-                            reject(e);
-                        }
-                    },
-                    onerror: function (response) {
-                        reject(response);
-                    },
-                    onabort: function (response) {
-                        reject(response);
-                    },
-                    ontimeout: function (response) {
-                        reject(response);
-                    },
-                });
-            });
+        async function fetchAsfTargets() {
+            const body = await requestSource("https://asf.justarchi.net/Api/Listing/Bots", "ASF discovery", generation);
+            assertCurrentScan(generation);
+            let re = /("SteamID":)(\d+)/g;
+            let parsed;
+            try {
+                parsed = JSON.parse(String(body).replace(re, '$1"$2"'));
+            } catch (_) {
+                throw new Error("ASF returned an invalid listing response (HTTP 200)");
+            }
+            if (!parsed.Success || !Array.isArray(parsed.Result)) {
+                throw new Error("ASF backend did not return a successful listing (HTTP 200)");
+            }
+            return parsed.Result.filter(bot => (bot.MatchableTypes ?? []).includes(5)).map(normalizeBot);
         }
 
-        function fetchFriendTargets() {
-            return new Promise((resolve, reject) => {
-                requestFunc({
-                    method: "GET",
-                    timeout: 30000,
-                    url: "https://steamcommunity.com/actions/PlayerList/?type=friends",
-                    headers: {
-                        "User-Agent": "ASF-STM/" + GM_info.version,
-                    },
-                    onload: function (response) {
-                        if (response.status !== 200) {
-                            reject(new Error(`Can't fetch friends: ${response.status}`));
-                            return;
-                        }
-                        try {
-                            const parser = new DOMParser();
-                            const friendListDocument = parser.parseFromString(response.responseText ?? response.response, 'text/html');
-                            let accountIDs = Array.from(friendListDocument.querySelectorAll('div.friendBlock'), x => x.dataset.miniprofile);
-                            let profile = Array.from(friendListDocument.querySelectorAll('a.friendBlockLinkOverlay'), x => x.href.replace(/https:\/\/steamcommunity.com\//g, ''));
-                            let avatarHash = Array.from(friendListDocument.querySelectorAll('div.friendBlock img'), img => img.src).map(str => str.match(/[a-z0-9]{40}/)?.[0] ?? null);
-                            let nickname = Array.from(friendListDocument.querySelectorAll('div.friendBlockContent'), x => x.childNodes[0]?.data?.trim() ?? 'Unknown friend');
-                            resolve(profile.map((profileLink, index) => normalizeFriend(profileLink, avatarHash[index], nickname[index], accountIDs[index])));
-                        } catch (e) {
-                            reject(e);
-                        }
-                    },
-                    onerror: function (response) {
-                        reject(response);
-                    },
-                    onabort: function (response) {
-                        reject(response);
-                    },
-                    ontimeout: function (response) {
-                        reject(response);
-                    },
-                });
-            });
+        async function fetchFriendTargets() {
+            const body = await requestSource("https://steamcommunity.com/actions/PlayerList/?type=friends", "Friends discovery", generation);
+            assertCurrentScan(generation);
+            const parser = new DOMParser();
+            const friendListDocument = parser.parseFromString(body, 'text/html');
+            // A login/private/error page must not be cached as a successful empty friend list.
+            if (!friendListDocument.querySelector("div.friendBlock, #search_results, #friends_list, .friends_content") ||
+                friendListDocument.querySelector("#loginForm, .profile_private_info, .error_ctn")) {
+                throw new Error("Friends list unavailable or unexpected page (HTTP 200); check Steam sign-in/privacy");
+            }
+            let accountIDs = Array.from(friendListDocument.querySelectorAll('div.friendBlock'), x => x.dataset.miniprofile);
+            let profile = Array.from(friendListDocument.querySelectorAll('a.friendBlockLinkOverlay'), x => x.href.replace(/https:\/\/steamcommunity.com\//g, ''));
+            let avatarHash = Array.from(friendListDocument.querySelectorAll('div.friendBlock img'), img => img.src).map(str => str.match(/[a-z0-9]{40}/)?.[0] ?? null);
+            let nickname = Array.from(friendListDocument.querySelectorAll('div.friendBlockContent'), x => x.childNodes[0]?.data?.trim() ?? 'Unknown friend');
+            return profile.map((profileLink, index) => normalizeFriend(profileLink, avatarHash[index], nickname[index], accountIDs[index]));
         }
 
         let fetchers = [];
         if (enabledSources.scanBots) {
-            fetchers.push(fetchAsfTargets());
+            fetchers.push({name: "ASF", promise: fetchAsfTargets()});
         }
         if (enabledSources.scanFriends) {
-            fetchers.push(fetchFriendTargets());
+            fetchers.push({name: "Friends", promise: fetchFriendTargets()});
         }
         if (enabledSources.scanGroups) {
-            fetchers.push(discoverGroupTargets(generation));
+            fetchers.push({name: "Groups", promise: discoverGroupTargets(generation)});
         }
         if (fetchers.length === 0 && whitelist.length === 0) {
             enableButton();
@@ -3733,24 +3890,30 @@
             return;
         }
 
-        Promise.allSettled(fetchers).then((results) => {
+        showDiscoveryProgress("Discovering enabled scan sources…");
+        Promise.allSettled(fetchers.map(fetcher => fetcher.promise)).then((results) => {
             if (stop || generation !== scanGeneration) {
                 return;
             }
             const successfulResults = results.filter(result => result.status === "fulfilled").map(result => result.value);
-            if (successfulResults.length === 0 && whitelist.length === 0) {
-                enableButton();
-                document.querySelector('#asf_stm_stop_div').hidden = true;
-                document.getElementById("asf_stm_button_div").setAttribute("title", "Can't fetch scan targets");
-                showDiscoveryProgress("Failed to fetch enabled sources; no targets scanned");
-                return;
-            }
+            const sourceReports = results.map((result, index) => ({
+                name: fetchers[index].name,
+                status: result.status !== "fulfilled" ? "failed" :
+                    fetchers[index].name === "Groups" && groupDiscoveryReports.some(report => report.status !== "complete") ?
+                        groupDiscoveryReports.every(report => report.status === "complete" || report.kind === "limit") ? "limited" : "partial" : "complete",
+                detail: result.status === "fulfilled" ? "" : sanitizeDiagnostic(result.reason?.message || "Request failed; no HTTP status available"),
+                diagnostic: result.reason?.path ? {
+                    stage: result.reason.stage, path: result.reason.path, status: result.reason.status,
+                    event: result.reason.event, attempts: result.reason.attempts,
+                } : undefined,
+            }));
             const partialFailure = results.some(result => result.status !== "fulfilled") || groupDiscoveryReports.some(report => report.status !== "complete");
             bots = {
-                Success: true,
+                Success: successfulResults.length > 0 || whitelist.length > 0,
                 profileLink: myProfileLink,
                 cacheTime: Date.now(),
                 partialFailure: partialFailure,
+                sourceReports,
                 groupReports: deepClone(groupDiscoveryReports),
                 sourceState: {...enabledSources, whitelist: whitelist.join(",")},
                 Result: mergeTargets(successfulResults.concat([whitelist.map(normalizeWhitelistSteamID)])),
@@ -3772,6 +3935,12 @@
                 localStorage.setItem(`${STORAGE_PREFIX}.BotCache`, JSON.stringify(bots));
             } catch (error) {
                 console.warn("Failed to cache unified scan targets", error);
+            }
+            scanStatus.warning = sourceWarning(bots);
+            renderScanStatus();
+            if (!bots.Success) {
+                stopEventCleanup("Failed to fetch enabled sources; no targets scanned");
+                return;
             }
             buttonPressedEvent(true);
         });

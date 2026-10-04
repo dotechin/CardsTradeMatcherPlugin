@@ -6,7 +6,7 @@ A userscript that matches Steam Trading Cards with ASF bots, Steam friends, and 
 
 - **Installable file:** [`CardsTradeMatcherPlugin.user.js`](CardsTradeMatcherPlugin.user.js) (full userscript source)
 - **Direct install URL:** [`raw/CardsTradeMatcherPlugin.user.js`](https://raw.githubusercontent.com/dotechin/CardsTradeMatcherPlugin/main/CardsTradeMatcherPlugin.user.js)
-- **Version:** 6.5.0.0
+- **Version:** 6.5.0.1
 - **Authors:** Rudokhvist, iBreakEverything, dotechin
 
 ## Features
@@ -39,6 +39,22 @@ Group-related offers **never auto-send**, even when the global auto-send option 
 Verified inventory snapshots use a separate provenance and upgraded cache schema: old badge counts are never treated as verified tradable counts. Stale inventory reuse is labeled and refreshed in the background; refresh failure remains visible. **Force fresh scan** bypasses caches, and **Clear inventory cache** invalidates in-flight cache writes. Accepted-trade reconciliation subtracts consumed total and tradable counts until a newer snapshot supersedes it. Stop/restart invalidates obsolete work; Steam requests have bounded timeouts/retries and rate-limit backoff.
 
 With group scanning disabled, the existing badge-based ASF/friend matching and scan filters remain available.
+
+## Scan diagnostics and troubleshooting
+
+Progress, request errors, and persistent source warnings appear in an in-flow status area below the matcher results, including during discovery. Errors identify the stage, request path (without query strings/trade tokens), HTTP status when available, timeout/network event, and actual attempt count. A generic retry error alone cannot establish the runtime cause; only HTTP **429** confirms a rate-limit response. HTTP 401/403 suggests checking sign-in, privacy, or permissions; 404 suggests checking the endpoint/profile/group. Timeouts, network failures, and 5xx responses may reflect connectivity or upstream availability.
+
+Requests use bounded transient retries (configured max errors, capped at five retries after the initial attempt); other 4xx errors are not retried, except 408/429. A 429 honors available `Retry-After` seconds or HTTP-date headers. Steam scan and background-refresh calls share pacing/cooldown, with cancellation checks during long waits. No additional wait is performed after the final failed attempt, although subsequent Steam calls still respect the shared cooldown. The configured web limiter is now a minimum spacing for these calls, even if the adaptive delay eases lower.
+
+Defaults remain **web limiter 300 ms / parallel requests 3 / error delay 30000 ms / max errors 3**. For troubleshooting, try **parallel requests 1 / web limiter 1500 ms** and wait before restarting. This is conservative guidance, not a guaranteed fix; background refreshes also consume requests. Check the reported status first rather than assuming Steam blocked the scan.
+
+Warnings name missing ASF/Friends/Groups sources and retain available failure details in the target cache. Configured group/page/member limits are reported separately as **partial by limits**, not fetch failures. Successful targets/results remain available; unavailable individual inventories are skipped. If your own verified inventory is unavailable in group mode, matching stops safely without substituting unverified badge counts. Older partial caches may lack source details: use **Bypass next scan** to rediscover them.
+
+**Install/update the userscript to 6.5.0.1 and reload the Steam page.** Editing this repository does not update an already running installed copy. Live Steam behavior has not been verified for this release; browser checks use local fixtures.
+
+### Local regression checks
+
+With Node.js installed, run `node --check CardsTradeMatcherPlugin.user.js` and `node --test tests/scan-diagnostics.test.js`. Tests use mocked requests/clocks and cover diagnostics, retries, cancellation, source warnings, status replacement, and source-row structure; they do not contact Steam.
 
 ## Overall Status
 
