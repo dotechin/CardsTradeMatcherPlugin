@@ -452,7 +452,7 @@
         });
     }
 
-    async function loadVerifiedInventory(steamID64, generation, onRefresh, onRefreshFailure) {
+    async function loadVerifiedInventory(steamID64, generation, onRefresh, onRefreshFailure, requireFresh) {
         assertCurrentScan(generation);
         const cacheGeneration = inventoryCacheGeneration;
         const key = `verified:${steamID64}:753:6`;
@@ -474,6 +474,11 @@
             const stale = !isInventoryCacheEntryFresh(cached);
             cacheStats[stale ? "staleHits" : "freshHits"]++;
             updateCacheStatus();
+            if (stale && requireFresh?.(cached.snapshot)) {
+                const snapshot = await fetchCardInventory(steamID64, generation);
+                write(snapshot);
+                return snapshot;
+            }
             if (stale && onRefresh) {
                 enqueueInventoryCacheRefresh(key, done => {
                     fetchCardInventory(steamID64, generation).then(snapshot => {
@@ -1757,15 +1762,25 @@
     function finalizeOwnInventoryAfterLoad() {
         if (globalSettings.scanGroups && ownInventoryVerifiedGeneration !== scanGeneration) {
             const generation = scanGeneration;
+            const templates = deepClone(myBadges);
+            const rebuildBadges = snapshot => {
+                const badges = deepClone(templates);
+                overlayCardInventory(badges, snapshot);
+                return badges;
+            };
             resolveOwnSteamID64(generation).then(id => loadVerifiedInventory(id, generation, snapshot => {
-                overlayCardInventory(myBadges, snapshot);
+                myBadges = rebuildBadges(snapshot);
                 ownInventorySnapshotTime = snapshot.snapshotTime;
                 finalizeBadgeCollection(myBadges, false);
                 setOwnInventoryStatus(`refreshed ${snapshot.status}`);
                 renderStoredMatches();
-            }, () => setOwnInventoryStatus("stale (refresh failed; refresh manually)"))).then(snapshot => {
+            }, () => setOwnInventoryStatus("stale (refresh failed; refresh manually)"), snapshot => {
+                const badges = rebuildBadges(snapshot);
+                finalizeBadgeCollection(badges, true);
+                return badges.length === 0;
+            })).then(snapshot => {
                 assertCurrentScan(generation);
-                overlayCardInventory(myBadges, snapshot);
+                myBadges = rebuildBadges(snapshot);
                 ownInventorySnapshotTime = snapshot.snapshotTime;
                 ownInventoryVerifiedGeneration = generation;
                 setOwnInventoryStatus(snapshot.status);
@@ -2964,6 +2979,7 @@
             finalizeBadgeCollection(refreshed, false);
             target.badgesSnapshot = refreshed;
             target.InventorySnapshotTime = snapshot.snapshotTime;
+            target.NormalCardCount = Object.values(snapshot.counts).reduce((sum, card) => sum + card.count, 0);
             setTargetInventoryStatus(target, `refreshed ${snapshot.status}`);
             renderStoredMatches();
         }, () => {
@@ -2974,7 +2990,7 @@
             overlayCardInventory(templates, snapshot);
             target.InventorySnapshotTime = snapshot.snapshotTime;
             setTargetInventoryStatus(target, snapshot.status);
-            target.TotalInventoryCount = Object.values(snapshot.counts).reduce((sum, card) => sum + card.count, 0);
+            target.NormalCardCount = Object.values(snapshot.counts).reduce((sum, card) => sum + card.count, 0);
             botBadges = templates;
             markProgressComplete("botBadges");
             updateProgress("bots");
