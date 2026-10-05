@@ -11,7 +11,7 @@
 // @match           *://steamcommunity.com/profiles/*/badges
 // @match           *://steamcommunity.com/profiles/*/badges/
 // @match           *://steamcommunity.com/tradeoffer/new/*
-// @version         6.5.0.1
+// @version         6.5.0.2
 // @homepageURL     https://github.com/dotechin/CardsTradeMatcherPlugin
 // @supportURL      https://github.com/dotechin/CardsTradeMatcherPlugin/issues
 // @downloadURL     https://raw.githubusercontent.com/dotechin/CardsTradeMatcherPlugin/main/CardsTradeMatcherPlugin.user.js
@@ -29,7 +29,6 @@
     let errors = 0;
     let bots = null;
     let myBadges = [];
-    let ownBadgeTemplates = [];
     let botBadges = [];
     let maxPages;
     let stop = false;
@@ -110,7 +109,6 @@
     let lastAdaptiveDecayAt = 0;
     let ownInventorySnapshotTime = 0;
     let ownSteamID64 = null;
-    let ownInventoryVerifiedGeneration = -1;
     let groupDiscoveryReports = [];
     let inventoryScanStatuses = {};
     const activeScanRequests = new Set();
@@ -605,153 +603,6 @@
         return item?.tradable === 1 || item?.tradable === "1" || item?.tradable === true;
     }
 
-    async function fetchCardInventory(steamID64, generation) {
-        if (!isUserSteamID64(steamID64)) {
-            throw {type: "failed", message: "Invalid inventory owner"};
-        }
-        // Request-start time is conservative: never assume a trade completed during pagination is already reflected.
-        const snapshotTime = Date.now();
-        const counts = {};
-        const seenAssets = new Set();
-        const cursors = new Set();
-        let cursor = "";
-        let expectedTotal = null;
-        for (let page = 0; page < 100; page++) {
-            const data = await requestSteam(`https://steamcommunity.com/inventory/${steamID64}/753/6?l=english&count=5000${cursor ? `&start_assetid=${cursor}` : ""}`, "json", generation,
-                steamID64 === ownSteamID64 ? "Your verified inventory" : "Target verified inventory");
-            if (!data || (data.success !== 1 && data.success !== true)) {
-                throw {type: /private|permission|access/i.test(data?.Error || data?.error || "") ? "private" : "failed", message: "Steam inventory not available"};
-            }
-            const total = Number(data.total_inventory_count);
-            if (!Number.isSafeInteger(total) || total < 0 || (expectedTotal !== null && total !== expectedTotal)) {
-                throw {type: "failed", message: "Inventory changed during pagination or invalid total"};
-            }
-            expectedTotal = total;
-            if (data.assets === undefined && Number(data.total_inventory_count) === 0 && !data.more_items) {
-                return {provenance: "steam-inventory-753-6", complete: true, snapshotTime, counts, status: "empty"};
-            }
-            if (!Array.isArray(data.assets) || !Array.isArray(data.descriptions)) {
-                throw {type: "failed", message: "Invalid inventory response"};
-            }
-            const descriptions = new Map(data.descriptions.map(description => [`${description.classid}_${description.instanceid || "0"}`, description]));
-            for (const asset of data.assets) {
-                if (!/^\d+$/.test(String(asset.assetid)) || Number(asset.appid) !== 753 || !Number.isSafeInteger(Number(asset.amount)) || Number(asset.amount) < 1) {
-                    throw {type: "failed", message: "Invalid inventory asset"};
-                }
-                if (seenAssets.has(String(asset.assetid))) {
-                    continue;
-                }
-                seenAssets.add(String(asset.assetid));
-                const description = descriptions.get(`${asset.classid}_${asset.instanceid || "0"}`);
-                if (!description) {
-                    throw {type: "failed", message: "Missing inventory description"};
-                }
-                if (!isNormalCard(description)) {
-                    continue;
-                }
-                const hash = description.market_hash_name;
-                const appId = Number(description.market_fee_app || description.tags.find(tag => tag.category === "Game")?.internal_name?.replace(/^app_/, ""));
-                if (typeof hash !== "string" || !Number.isSafeInteger(appId) || appId < 1 || !hash.startsWith(`${appId}-`)) {
-                    throw {type: "failed", message: "Missing stable card identifier"};
-                }
-                const record = counts[hash] || {count: 0, tradableCount: 0, appId};
-                record.count += Number(asset.amount);
-                if (isTradableItem(description)) {
-                    record.tradableCount += Number(asset.amount);
-                }
-                counts[hash] = record;
-            }
-            if (!data.more_items) {
-                if (seenAssets.size !== expectedTotal) {
-                    throw {type: "failed", message: "Incomplete inventory; refresh before matching"};
-                }
-                return {provenance: "steam-inventory-753-6", complete: true, snapshotTime, counts, status: Object.keys(counts).length ? "public" : "empty"};
-            }
-            const next = String(data.last_assetid || "");
-            if (!/^\d+$/.test(next) || cursors.has(next) || data.assets.length === 0) {
-                throw {type: "failed", message: "Invalid/repeated inventory cursor"};
-            }
-            cursors.add(next);
-            cursor = next;
-            await scanDelay(getAdaptiveRequestDelay(), generation);
-        }
-        throw {type: "failed", message: "Inventory page safety limit reached; incomplete data discarded"};
-    }
-
-    function validVerifiedInventory(snapshot) {
-        return snapshot?.provenance === "steam-inventory-753-6" && snapshot.complete === true &&
-            Number.isFinite(snapshot.snapshotTime) && snapshot.snapshotTime > 0 && snapshot.snapshotTime <= Date.now() &&
-            snapshot.counts && typeof snapshot.counts === "object" && !Array.isArray(snapshot.counts) &&
-            Object.entries(snapshot.counts).every(([hash, card]) => typeof hash === "string" && Number.isSafeInteger(card.appId) && card.appId > 0 &&
-                hash.startsWith(`${card.appId}-`) && Number.isSafeInteger(card.count) && card.count >= 0 &&
-                Number.isSafeInteger(card.tradableCount) && card.tradableCount >= 0 && card.tradableCount <= card.count);
-    }
-
-    function overlayCardInventory(badges, snapshot) {
-        badges.forEach(badge => {
-            badge.inventoryProvenance = snapshot.provenance;
-            badge.cards.forEach(card => {
-                const inventoryCard = snapshot.counts[card.hash];
-                card.count = inventoryCard?.appId === badge.appId ? inventoryCard.count : 0;
-                card.tradableCount = inventoryCard?.appId === badge.appId ? inventoryCard.tradableCount : 0;
-            });
-        });
-    }
-
-    async function loadVerifiedInventory(steamID64, generation, onRefresh, onRefreshFailure, requireFresh) {
-        assertCurrentScan(generation);
-        const cacheGeneration = inventoryCacheGeneration;
-        const key = `verified:${steamID64}:753:6`;
-        const store = loadInventoryCacheStore();
-        const cached = isInventoryCacheEnabled() && !cacheBypassActive ? store.entries[key] : null;
-        const write = snapshot => {
-            assertCurrentScan(generation);
-            if (cacheGeneration !== inventoryCacheGeneration || !isInventoryCacheEnabled() || cacheBypassActive) {
-                return;
-            }
-            store.entries[key] = {version: CACHE_SCHEMA_VERSION, cacheTime: Date.now(), lastUsedTime: Date.now(), snapshot};
-            evictInventoryCacheEntries(store);
-            saveInventoryCacheStore(store);
-            cacheStats.writes++;
-            updateCacheStatus();
-        };
-        if (cached?.version === CACHE_SCHEMA_VERSION && Number.isFinite(cached.cacheTime) && cached.cacheTime > 0 && cached.cacheTime <= Date.now() && validVerifiedInventory(cached.snapshot)) {
-            cached.lastUsedTime = Date.now();
-            const stale = !isInventoryCacheEntryFresh(cached);
-            cacheStats[stale ? "staleHits" : "freshHits"]++;
-            updateCacheStatus();
-            if (stale && requireFresh?.(cached.snapshot)) {
-                const snapshot = await fetchCardInventory(steamID64, generation);
-                write(snapshot);
-                return snapshot;
-            }
-            if (stale && onRefresh) {
-                enqueueInventoryCacheRefresh(key, done => {
-                    fetchCardInventory(steamID64, generation).then(snapshot => {
-                        assertCurrentScan(generation);
-                        if (cacheGeneration === inventoryCacheGeneration) {
-                            write(snapshot);
-                            onRefresh(snapshot);
-                        }
-                    }).catch(error => {
-                        if (error?.type !== "stopped") {
-                            cacheStats.refreshFailures++;
-                            updateCacheStatus();
-                            if (!stop && generation === scanGeneration && cacheGeneration === inventoryCacheGeneration && onRefreshFailure) {
-                                onRefreshFailure(error);
-                            }
-                        }
-                    }).finally(done);
-                });
-            }
-            return {...deepClone(cached.snapshot), status: stale ? "stale (refresh queued)" : `cached ${cached.snapshot.status}`};
-        }
-        cacheStats.misses++;
-        const snapshot = await fetchCardInventory(steamID64, generation);
-        write(snapshot);
-        return snapshot;
-    }
-
     function setTargetInventoryStatus(target, status) {
         if (target.CountedInventoryStatus) {
             inventoryScanStatuses[target.CountedInventoryStatus]--;
@@ -762,12 +613,6 @@
         target.InventoryStatus = status;
         target.CountedInventoryStatus = status;
         inventoryScanStatuses[status] = (inventoryScanStatuses[status] || 0) + 1;
-        updateResultSummary();
-    }
-
-    function setOwnInventoryStatus(status) {
-        Object.keys(inventoryScanStatuses).filter(key => key.startsWith("Your inventory: ")).forEach(key => delete inventoryScanStatuses[key]);
-        inventoryScanStatuses[`Your inventory: ${status}`] = 1;
         updateResultSummary();
     }
 
@@ -907,8 +752,7 @@
     }
 
     function getReconciledTargetBadges(target, badges) {
-        const reconciled = validVerifiedInventory(target.inventorySnapshot) ?
-            buildVerifiedTargetBadges(target.inventorySnapshot) : deepClone(badges);
+        const reconciled = deepClone(badges);
         if (!target.InventorySnapshotTime) {
             return reconciled;
         }
@@ -1206,7 +1050,8 @@
         ].join("&ensp;|&ensp;");
         const detail = document.createElement("div");
         detail.style.color = "#e5c07b";
-        detail.textContent = groupDiscoveryReports.map(report => `${report.name}: ${report.members} members, ${report.pages} pages (${report.status})`).concat(
+        detail.textContent = ["Potential matches from badge counts; tradability is checked when preparing offers."].concat(
+            groupDiscoveryReports.map(report => `${report.name}: ${report.members} members, ${report.pages} pages (${report.status})`),
             Object.entries(inventoryScanStatuses).map(([status, count]) => `${status}: ${count}`)
         ).join(" | ");
         summary.appendChild(detail);
@@ -1884,6 +1729,7 @@
         const refreshScanGeneration = scanGeneration;
         const cardHashes = myBadges.map((badge) => Object.fromEntries(badge.cards.map((card) => [card.number, card.hash])));
         enqueueInventoryCacheRefresh(cacheKey, function (done) {
+            const snapshotTime = Date.now();
             const refreshedBadges = deepClone(badgeTemplates);
             let refreshErrors = 0;
             function refreshBadge(index, idLink) {
@@ -1903,6 +1749,7 @@
                         scopeKey: cacheMeta.scopeKey,
                         appIds: cacheMeta.appIds,
                         badges: refreshedBadges,
+                        snapshotTime,
                     }, true);
                     done();
                     return;
@@ -2012,42 +1859,6 @@
     }
 
     function finalizeOwnInventoryAfterLoad() {
-        if (globalSettings.scanGroups && ownInventoryVerifiedGeneration !== scanGeneration) {
-            const generation = scanGeneration;
-            ownBadgeTemplates = deepClone(myBadges);
-            const rebuildBadges = snapshot => {
-                const badges = deepClone(ownBadgeTemplates);
-                overlayCardInventory(badges, snapshot);
-                return badges;
-            };
-            resolveOwnSteamID64(generation).then(id => loadVerifiedInventory(id, generation, snapshot => {
-                myBadges = rebuildBadges(snapshot);
-                ownInventorySnapshotTime = snapshot.snapshotTime;
-                finalizeBadgeCollection(myBadges, false);
-                setOwnInventoryStatus(`refreshed ${snapshot.status}`);
-                renderStoredMatches();
-            }, error => {
-                setOwnInventoryStatus("stale (refresh failed; refresh manually)");
-                showScanDiagnostic(error);
-            }, snapshot => {
-                const badges = rebuildBadges(snapshot);
-                finalizeBadgeCollection(badges, true);
-                return badges.length === 0;
-            })).then(snapshot => {
-                assertCurrentScan(generation);
-                myBadges = rebuildBadges(snapshot);
-                ownInventorySnapshotTime = snapshot.snapshotTime;
-                ownInventoryVerifiedGeneration = generation;
-                setOwnInventoryStatus(snapshot.status);
-                finalizeOwnInventoryAfterLoad();
-            }).catch(error => {
-                if (generation === scanGeneration) {
-                    showScanDiagnostic(error);
-                    stopEventCleanup(error?.type === "stopped" ? "User interrupt" : "Your verified inventory is unavailable; scan stopped safely");
-                }
-            });
-            return;
-        }
         finalizeBadgeCollection(myBadges, true);
         if (globalSettings.autoDeleteScanFilters) {
             const inactiveScanFilters = globalSettings.scanFilters.filter(x => !x.active);
@@ -2769,11 +2580,6 @@
             }
             let myBadge = deepClone(ownBadge);
             let theirBadge = deepClone(targetBadge);
-            const verifiedRequired = globalSettings.scanGroups || bots.Result[index].SourceTypes.includes("groups");
-            if (verifiedRequired && (myBadge.inventoryProvenance !== "steam-inventory-753-6" || theirBadge.inventoryProvenance !== "steam-inventory-753-6" ||
-                myBadge.cards.some(card => !Number.isSafeInteger(card.tradableCount)) || theirBadge.cards.some(card => !Number.isSafeInteger(card.tradableCount)))) {
-                continue;
-            }
             const originalCardsByNumber = new Map(ownBadge.cards.map((card) => [card.number, card]));
             let myState = calcState(myBadge);
             while (myState < 2) {
@@ -3216,6 +3022,7 @@
         const cacheGeneration = inventoryCacheGeneration;
         const target = bots.Result[userindex];
         const badges = botBadges;
+        const snapshotTime = Date.now();
         const idLinkRef = {value: undefined};
         runIndexedWorkerPool(badges.length, getScanConcurrency(), (i, cancelToken) => fetchTargetBadgeWithRetry(badges, i, target, idLinkRef, cancelToken))
             .then(() => {
@@ -3231,8 +3038,11 @@
                         scopeKey: cacheMeta.scopeKey,
                         appIds: cacheMeta.appIds,
                         badges: badges,
+                        snapshotTime,
                     });
                 }
+                target.InventorySnapshotTime = snapshotTime;
+                setTargetInventoryStatus(target, "badge counts");
                 finalizeTargetInventoryAfterLoad(userindex);
             })
             .catch((error) => {
@@ -3261,56 +3071,6 @@
                 }
                 stopEventCleanup(error?.message ?? 'Error getting badge data');
             });
-    }
-
-    function buildVerifiedTargetBadges(snapshot) {
-        const badges = deepClone(ownBadgeTemplates);
-        overlayCardInventory(badges, snapshot);
-        finalizeBadgeCollection(badges, false);
-        return badges;
-    }
-
-    function scanVerifiedTarget(userindex) {
-        const generation = scanGeneration;
-        const target = bots.Result[userindex];
-        const id = target.SteamID64 || (76561197960265728n + BigInt(target.TradePartner)).toString();
-        progressRadials.botBadges.textElement.textContent = "Inventory…";
-        loadVerifiedInventory(id, generation, snapshot => {
-            target.inventorySnapshot = deepClone(snapshot);
-            target.badgesSnapshot = buildVerifiedTargetBadges(snapshot);
-            target.InventorySnapshotTime = snapshot.snapshotTime;
-            target.NormalCardCount = Object.values(snapshot.counts).reduce((sum, card) => sum + card.count, 0);
-            setTargetInventoryStatus(target, `refreshed ${snapshot.status}`);
-            renderStoredMatches();
-        }, error => {
-            setTargetInventoryStatus(target, "stale (refresh failed; refresh manually)");
-            showScanDiagnostic(error);
-            renderStoredMatches();
-        }).then(snapshot => {
-            assertCurrentScan(generation);
-            target.inventorySnapshot = deepClone(snapshot);
-            target.InventorySnapshotTime = snapshot.snapshotTime;
-            setTargetInventoryStatus(target, snapshot.status);
-            target.NormalCardCount = Object.values(snapshot.counts).reduce((sum, card) => sum + card.count, 0);
-            botBadges = buildVerifiedTargetBadges(snapshot);
-            markProgressComplete("botBadges");
-            updateProgress("bots");
-            finalizeTargetInventoryAfterLoad(userindex);
-        }).catch(error => {
-            if (generation !== scanGeneration) {
-                return;
-            }
-            if (error?.type === "stopped") {
-                stopEventCleanup("User interrupt");
-                return;
-            }
-            setTargetInventoryStatus(target, error?.type === "private" ? "private/unavailable" : "failed");
-            showScanDiagnostic(error);
-            progressRadials.botBadges.textElement.textContent = target.InventoryStatus;
-            updateProgress("bots");
-            updateResultSummary();
-            scanDelay(getAdaptiveRequestDelay(), generation).then(() => GetCards(0, userindex + 1)).catch(() => {});
-        });
     }
 
     function GetCards(index, userindex) {
@@ -3344,11 +3104,6 @@
             GetCards(0, userindex + 1);
             return;
         }
-        if (globalSettings.scanGroups) {
-            scanVerifiedTarget(userindex);
-            return;
-        }
-
         // scan bot badge step
         if (index === 0) {
             botBadges.length = 0;
@@ -3366,6 +3121,8 @@
                     refreshTargetInventoryCacheEntry(cacheKey, cacheMeta, target, botBadges);
                 }
                 botBadges = cachedInventory.badges;
+                target.InventorySnapshotTime = cachedInventory.snapshotTime;
+                setTargetInventoryStatus(target, cachedInventory.stale ? "stale badge counts (refresh queued)" : "cached badge counts");
                 markProgressComplete('botBadges');
                 finalizeTargetInventoryAfterLoad(userindex);
                 return;
@@ -3685,8 +3442,6 @@
         if (targetsReady !== true) {
             scanGeneration++;
             stop = false;
-            ownInventoryVerifiedGeneration = -1;
-            ownBadgeTemplates = [];
             groupDiscoveryReports = [];
             inventoryScanStatuses = {};
             inventoryRefreshQueue.length = 0;
@@ -3725,7 +3480,6 @@
         bots.Result.sort(botSorter);
         bots.Result.forEach(target => {
             delete target.badgesSnapshot;
-            delete target.inventorySnapshot;
             delete target.itemsToSend;
             delete target.itemsToReceive;
             delete target.CountedInventoryStatus;
@@ -3748,7 +3502,6 @@
             groupControl.className = "commentthread_pagelinks";
             groupControl.textContent = "Groups (including shared)";
             document.getElementById("asf_stm_results_controls").prepend(groupControl);
-            document.getElementById("bots-badges-label").textContent = "Target Inventory";
         }
         document.getElementById("asf_stm_filters_body").addEventListener("change", filterEventHandler);
         document.getElementById("asf_stm_filter_all").addEventListener("click", filterSwitchesHandler);
