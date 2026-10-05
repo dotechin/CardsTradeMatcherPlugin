@@ -415,10 +415,12 @@ test("group-enabled own badge finalization scans every source and skips unavaila
     ]);
     h.context.completed = [];
     h.context.diagnostics = [];
+    h.context.savedSnapshots = [];
     h.context.finished = new Promise(resolve => { h.context.finish = resolve; });
     h.run(`
         globalSettings.scanGroups = true;
         globalSettings.maxErrors = 0;
+        globalSettings.weblimiter = 100;
         globalSettings.anyBots = true;
         globalSettings.fairBots = true;
         globalSettings.botMinItems = 0;
@@ -450,7 +452,7 @@ test("group-enabled own badge finalization scans every source and skips unavaila
         }
         function buildInventoryCacheKey() { return "cache"; }
         function getInventoryCacheEntry() { return null; }
-        function setInventoryCacheEntry() {}
+        function setInventoryCacheEntry(key, entry) { savedSnapshots.push(entry); }
         function setTargetInventoryStatus(target, status) {
             target.InventoryStatus = status;
             inventoryScanStatuses[status] = (inventoryScanStatuses[status] || 0) + 1;
@@ -473,6 +475,81 @@ test("group-enabled own badge finalization scans every source and skips unavaila
     assert.match(h.context.stoppedReason, /partial/);
     assert.equal(h.run("bots.Result[2].badgesSnapshot[0].cards.length"), 5);
     assert.equal(h.run("myBadges[0].inventoryProvenance"), undefined);
+    assert.equal(h.context.savedSnapshots.length, 4, "only successful badge scans are cached");
+    for (const [cacheIndex, targetIndex] of h.context.completed.entries()) {
+        assert.equal(h.run(`bots.Result[${targetIndex}].InventoryStatus`), "badge counts");
+        const snapshotTime = h.run(`bots.Result[${targetIndex}].InventorySnapshotTime`);
+        assert.equal(snapshotTime, h.context.savedSnapshots[cacheIndex].snapshotTime);
+        assert.ok(snapshotTime <= h.starts[targetIndex], "snapshot starts no later than the badge request");
+    }
+});
+
+test("group badge cache reuse retains snapshot times and labels fresh versus queued stale counts", () => {
+    for (const stale of [false, true]) {
+        const h = harness();
+        h.context.refreshed = [];
+        h.run(`
+            globalSettings.scanGroups = true;
+            const blacklist = [], ownSteamID64 = null;
+            let myBadges = [{appId: 123, cards: [{number: 0, count: 4}]}], botBadges = [];
+            const bots = {Result: [{SourceTypes: ["groups"], SteamID: "123", TradePartner: "123"}]};
+            const progressRadials = {botBadges: {}};
+            const cached = {stale: ${stale}, snapshotTime: 12345,
+                badges: [{appId: 123, cards: [{number: 0, count: 2}]}]};
+            function deepClone(value) { return JSON.parse(JSON.stringify(value)); }
+            function updateProgress() {}
+            function markProgressComplete() {}
+            function buildInventoryCacheMeta() { return {}; }
+            function buildInventoryCacheKey() { return "badge-cache"; }
+            function getTargetInventorySourceType() { return "groups"; }
+            function getInventoryCacheEntry() { return cached; }
+            function refreshTargetInventoryCacheEntry(key, meta, target, badges) { refreshed.push(key); }
+            function setTargetInventoryStatus(target, status) { target.InventoryStatus = status; }
+            function finalizeTargetInventoryAfterLoad(index) { finalizedIndex = index; }
+            function scanTargetBadges() { throw new Error("Cache hit must not dispatch another badge scan"); }
+            ${declaration("GetCards")}
+            GetCards(0, 0);
+        `);
+        assert.equal(h.context.finalizedIndex, 0);
+        assert.equal(h.run("bots.Result[0].InventorySnapshotTime"), 12345);
+        assert.equal(h.run("bots.Result[0].InventoryStatus"),
+            stale ? "stale badge counts (refresh queued)" : "cached badge counts");
+        assert.equal(h.run("botBadges[0].cards[0].count"), 2);
+        assert.deepEqual(h.context.refreshed, stale ? ["badge-cache"] : []);
+        assert.equal(h.urls.length, 0);
+    }
+});
+
+test("target badge reconciliation subtracts received cards only for this partner after the snapshot", () => {
+    const h = harness();
+    h.run(`
+        function deepClone(value) { return JSON.parse(JSON.stringify(value)); }
+        const badges = [{appId: 123, cards: [
+            {number: 0, hash: "123-A", count: 3},
+            {number: 1, hash: "123-B", count: 1},
+            {number: 2, hash: "123-C", count: 4}
+        ]}];
+        const target = {TradePartner: "123", SourceTypes: ["asf", "groups"], InventorySnapshotTime: 1000};
+        const completed = {trades: {
+            older: {partner: "123", completedAt: 999, receiveCardNames: ["123-C"]},
+            equal: {partner: "123", completedAt: 1000, receiveCardNames: ["123-C"]},
+            otherPartner: {partner: "456", completedAt: 1001, receiveCardNames: ["123-C"]},
+            first: {partner: "123", completedAt: 1001, receiveCardNames: ["123-A", "123-B"], sendCardNames: ["123-C"]},
+            second: {partner: 123, completedAt: 1002, receiveCardNames: ["123-A", "123-B"]}
+        }};
+        function getCompletedTradeStore() { return completed; }
+        ${declaration("getReconciledTargetBadges")}
+        const original = JSON.stringify(badges);
+        const reconciled = getReconciledTargetBadges(target, badges);
+    `);
+    assert.deepEqual(Array.from(h.run("reconciled[0].cards"), card => card.count), [1, 0, 4]);
+    assert.equal(h.run("JSON.stringify(badges) === original"), true, "reconciliation must not mutate the cached badge snapshot");
+    h.run("target.InventorySnapshotTime = 1002");
+    assert.deepEqual(Array.from(h.run("getReconciledTargetBadges(target, badges)[0].cards"), card => card.count), [3, 1, 4],
+        "new snapshots supersede all earlier completed-trade consumption");
+    h.run("delete target.InventorySnapshotTime");
+    assert.equal(h.run("JSON.stringify(getReconciledTargetBadges(target, badges)) === original"), true);
+    assert.equal(h.run("getReconciledTargetBadges(target, badges) === badges"), false);
 });
 
 test("badge counts produce candidates without verified provenance; groups remain neutral+ even on ASF MatchEverything", () => {

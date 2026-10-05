@@ -1729,6 +1729,7 @@
         const refreshScanGeneration = scanGeneration;
         const cardHashes = myBadges.map((badge) => Object.fromEntries(badge.cards.map((card) => [card.number, card.hash])));
         enqueueInventoryCacheRefresh(cacheKey, function (done) {
+            const snapshotTime = Date.now();
             const refreshedBadges = deepClone(badgeTemplates);
             let refreshErrors = 0;
             function refreshBadge(index, idLink) {
@@ -1748,6 +1749,7 @@
                         scopeKey: cacheMeta.scopeKey,
                         appIds: cacheMeta.appIds,
                         badges: refreshedBadges,
+                        snapshotTime,
                     }, true);
                     done();
                     return;
