@@ -552,6 +552,75 @@ test("target badge reconciliation subtracts received cards only for this partner
     assert.equal(h.run("getReconciledTargetBadges(target, badges) === badges"), false);
 });
 
+test("queued multi-badge target refresh preserves request-start time and reconciles mid-refresh receipts", async () => {
+    const badgeDocument = {documentElement: {
+        querySelectorAll() {
+            return Array.from({length: 5}, (_, number) => ({
+                querySelector(selector) {
+                    if (selector === ".badge_card_set_text_qty") return {innerText: "(2)"};
+                    if (selector === ".gamecard") return {src: "card.png"};
+                    return {childNodes: [{nodeType: 3, textContent: `Card ${number}`}]};
+                },
+            }));
+        },
+    }};
+    const h = harness([
+        {status: 200, body: badgeDocument},
+        {status: 200, body: badgeDocument},
+    ]);
+    h.context.finished = new Promise(resolve => { h.context.finish = resolve; });
+    h.run(`
+        globalSettings.weblimiter = 1000;
+        const Node = {TEXT_NODE: 3}, inventoryCacheGeneration = 1;
+        const myBadges = [123, 456].map(appId => ({
+            appId, title: "Game " + appId, maxCards: 5,
+            cards: Array.from({length: 5}, (_, number) => ({
+                number, count: 2, hash: appId + "-" + number, item: "Card " + number, iconUrl: "card.png"
+            }))
+        }));
+        const target = {SteamID64: "76561198000000001", TradePartner: "39734273", SourceTypes: ["groups"]};
+        const cacheMeta = {entryType: "target", sourceType: "groups", profileId: target.SteamID64,
+            scopeKey: "123,456", appIds: [123, 456]};
+        function deepClone(value) { return JSON.parse(JSON.stringify(value)); }
+        function getTargetProfileLink() { return "profiles/" + target.SteamID64; }
+        function isInventoryRefreshCurrent(cacheGeneration, generation) {
+            return cacheGeneration === inventoryCacheGeneration && generation === scanGeneration;
+        }
+        function enqueueInventoryCacheRefresh(key, callback) {
+            setTimeout(() => callback(finish), 500);
+        }
+        function failInventoryCacheRefresh() { throw new Error("Refresh must succeed"); }
+        function setInventoryCacheEntry(key, payload, background) {
+            savedRefresh = deepClone(payload);
+            savedAt = Date.now();
+            isBackground = background;
+        }
+        function getCompletedTradeStore() {
+            return {trades: {midRefresh: {partner: target.TradePartner, completedAt: 1000,
+                receiveCardNames: ["123-0"]}}};
+        }
+        ${["refreshTargetInventoryCacheEntry", "getReconciledTargetBadges"].map(name => declaration(name)).join("\n")}
+        refreshTargetInventoryCacheEntry("badge-cache", cacheMeta, target, myBadges);
+    `);
+    await h.context.finished;
+    assert.deepEqual(h.starts, [500, 1500], "refresh starts after its queue wait and scans both badges");
+    assert.deepEqual(h.urls, [
+        "https://steamcommunity.com/profiles/76561198000000001/gamecards/123",
+        "https://steamcommunity.com/profiles/76561198000000001/gamecards/456",
+    ]);
+    assert.equal(h.context.savedRefresh.snapshotTime, 500, "cache payload must use refresh-start, not enqueue or completion time");
+    assert.equal(h.context.savedAt, 2500);
+    assert.equal(h.context.isBackground, true);
+    h.run(`
+        target.InventorySnapshotTime = savedRefresh.snapshotTime;
+        const reconciledRefresh = getReconciledTargetBadges(target, savedRefresh.badges);
+    `);
+    assert.equal(h.run('reconciledRefresh[0].cards.find(card => card.hash === "123-0").count'), 1,
+        "the first badge still includes a card consumed by the trade accepted during refresh");
+    assert.equal(h.run('savedRefresh.badges[0].cards.find(card => card.hash === "123-0").count'), 2);
+    assert.ok(h.run('reconciledRefresh[1].cards.every(card => card.count === 2)'));
+});
+
 test("badge counts produce candidates without verified provenance; groups remain neutral+ even on ASF MatchEverything", () => {
     const h = harness();
     h.run(`
