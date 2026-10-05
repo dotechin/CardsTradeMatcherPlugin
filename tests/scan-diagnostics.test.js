@@ -77,7 +77,7 @@ function harness(responses = []) {
         ${["boundedRetryLimit", "assertCurrentScan", "scanDelay", "waitForSteamSlot", "sendPacedSteamRequest",
             "retryAfterDelay", "sanitizeDiagnostic", "requestFailure", "requestWithRetries",
             "requestSteam", "requestSource", "sourceWarning", "showDiscoveryProgress",
-            "renderScanStatus", "showScanDiagnostic"].map(declaration).join("\n")}
+            "renderScanStatus", "showScanDiagnostic"].map(name => declaration(name)).join("\n")}
     `, context);
     return {context, starts, urls, sleeps, run: code => vm.runInContext(code, context), now: () => now};
 }
@@ -381,7 +381,7 @@ test("group member/page/group limits retain targets and remain limit reports", a
                 },
                 querySelectorAll() { return [{textContent: "76561198000000001"}, {textContent: "76561198000000002"}]; }
             });
-            ${["boundedLimit", "normalizeGroupUrl", "isUserSteamID64", "discoverGroupTargets"].map(declaration).join("\n")}
+            ${["boundedLimit", "normalizeGroupUrl", "isUserSteamID64", "discoverGroupTargets"].map(name => declaration(name)).join("\n")}
         `);
         const targets = await h.run("discoverGroupTargets(1)");
         assert.equal(targets.length, kind === "member" ? 1 : 2);
