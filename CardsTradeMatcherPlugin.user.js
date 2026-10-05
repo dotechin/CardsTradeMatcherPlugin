@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name            CardsTradeMatcherPlugin
 // @namespace       https://greasyfork.org/users/738914
-// @description     ASF bot, friend and optional Steam group trade matcher
+// @description     ASF bot and friend trade matcher
 // @license         Apache-2.0
 // @author          Rudokhvist
 // @author          iBreakEverything
@@ -11,7 +11,7 @@
 // @match           *://steamcommunity.com/profiles/*/badges
 // @match           *://steamcommunity.com/profiles/*/badges/
 // @match           *://steamcommunity.com/tradeoffer/new/*
-// @version         6.5.0.2
+// @version         6.4.0.0
 // @homepageURL     https://github.com/dotechin/CardsTradeMatcherPlugin
 // @supportURL      https://github.com/dotechin/CardsTradeMatcherPlugin/issues
 // @downloadURL     https://raw.githubusercontent.com/dotechin/CardsTradeMatcherPlugin/main/CardsTradeMatcherPlugin.user.js
@@ -44,7 +44,7 @@
         botBadges: {currentStep: 0, steps: 0, radialElement: null, textElement: null}
     };
     const STORAGE_PREFIX = "TempAsfStm.ASF.STM.Unified";
-    const CACHE_SCHEMA_VERSION = 2;
+    const CACHE_SCHEMA_VERSION = 1;
     const INVENTORY_CACHE_KEY = `${STORAGE_PREFIX}.InventoryCache.v${CACHE_SCHEMA_VERSION}`;
     const PENDING_TRADE_STORE_VERSION = 1;
     const COMPLETED_TRADE_STORE_VERSION = 1;
@@ -55,12 +55,6 @@
     let defaultSettings = {
         scanBots: true,
         scanFriends: true,
-        scanGroups: false,
-        groups: [],
-        groupLimit: 3,
-        groupMemberLimit: 100,
-        groupPageLimit: 10,
-        tradeUrls: [],
         anyBots: true,
         fairBots: true,
         sortByName: true,
@@ -108,13 +102,6 @@
     let adaptiveRequestDelay = null;
     let lastAdaptiveDecayAt = 0;
     let ownInventorySnapshotTime = 0;
-    let ownSteamID64 = null;
-    let groupDiscoveryReports = [];
-    let inventoryScanStatuses = {};
-    const activeScanRequests = new Set();
-    let steamCooldownUntil = 0;
-    let nextSteamRequestAt = 0;
-    let scanStatus = {progress: "", warning: "", diagnostic: ""};
     let pendingTradeStore = null;
     let completedTradeStore = null;
     let tradeRefreshInFlight = false;
@@ -138,482 +125,10 @@
     });
 
     //styles
-    const configCss = `
-        .asf-stm-config{width:min(720px,calc(100vw - 64px));height:auto;margin:0;font-size:13px;line-height:1.5;color:#dfe3e6}
-        .asf-stm-config *{box-sizing:border-box}
-        .asf-stm-config .asf_stm_tabs{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));width:100%;margin:0;padding:0;list-style:none}
-        .asf-stm-config .asf_stm_tab{display:contents;float:none}
-        .asf-stm-config .asf_stm_tab>label{display:flex;align-items:center;justify-content:center;grid-row:1;padding:10px 8px;text-align:center;background:#1b2838;border:1px solid #354658;color:#c7d5e0;overflow-wrap:anywhere}
-        .asf-stm-config .asf_stm_tab>input:focus-visible+label{outline:2px solid #66c0f4;outline-offset:-3px}
-        .asf-stm-config .asf_stm_tab>input:checked+label{background:#303030;border-bottom-color:#303030;color:#fff}
-        .asf-stm-config .asf_stm_content{grid-column:1/-1;grid-row:2;position:static;width:100%;height:min(56vh,480px);min-height:180px;padding:16px;overflow:auto;background:#303030;border:1px solid #354658;border-top:0}
-        .asf-stm-config fieldset{min-width:0;margin:0 0 14px;padding:12px;border:1px solid #4a515b;border-radius:3px}
-        .asf-stm-config .asf-stm-scan-sources{display:flex;flex-direction:column;gap:8px}
-        .asf-stm-config .asf-stm-scan-source{display:flex;align-items:center;gap:8px;min-height:24px;margin:0;line-height:1.4}
-        .asf-stm-config .asf-stm-scan-source label{display:flex;align-items:center;gap:8px;margin:0;min-width:0}
-        .asf-stm-config .asf-stm-scan-source input.asf-stm-checkbox{margin:0;flex-shrink:0}
-        #asf_stm_status{position:static;margin:16px 0;padding:10px;border-top:1px solid #4a515b;line-height:1.5;overflow-wrap:anywhere;color:#c7d5e0}
-        #asf_stm_status [data-status-row=warning]{color:#e5c07b}
-        #asf_stm_status [data-status-row=diagnostic]{color:#ff7b72}
-        .asf-stm-config legend{padding:0 6px;color:#66c0f4;font-size:11px;letter-spacing:.06em}
-        .asf-stm-config .asf-stm-input,.asf-stm-config .asf-stm-select,.asf-stm-config .asf-stm-textarea{border:1px solid #4a515b;border-radius:3px;padding:6px 8px;max-width:100%;font:inherit}
-        .asf-stm-config .asf-stm-input[type=number]{width:100px}
-        .asf-stm-config .asf-stm-input[type=color]{width:48px;height:30px;padding:2px;vertical-align:middle}
-        .asf-stm-config .asf-stm-textarea{display:block;width:100%;resize:vertical}
-        .asf-stm-config .asf-stm-checkbox{vertical-align:middle;margin:4px 6px}
-        .asf-stm-config .asf-stm-margin-bottom{margin-bottom:10px}
-        .asf-stm-config .asf-stm-span{vertical-align:middle}
-        .asf-stm-config .tooltip img{width:16px;height:16px;vertical-align:middle;margin-left:4px}
-        .asf-stm-config button{cursor:pointer}
-        .asf-stm-config p{margin:0 0 10px}
-        .asf-stm-config .asf-stm-group-defaults{display:grid;grid-template-columns:minmax(0,1fr) 100px;gap:8px 12px;align-items:center;margin-bottom:12px}
-        .asf-stm-config .asf-stm-group-add{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-        .asf-stm-config #addGroupUrl{flex:1;min-width:160px}
-        .asf-stm-config #groupSettingsStatus{margin-top:8px;color:#c7d5e0;overflow-wrap:anywhere}
-        .asf-stm-config .asf-stm-group-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto auto;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid #4a515b}
-        .asf-stm-config .asf-stm-group-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#66c0f4}
-        .asf-stm-config .asf-stm-group-row label{display:flex;align-items:center;gap:6px;white-space:nowrap}
-        .asf-stm-config .asf-stm-group-row .asf-stm-input{width:76px}
-        .asf-stm-config .asf-stm-group-row button{white-space:nowrap}
-        @media(max-width:540px){
-            .asf-stm-config .asf_stm_tabs{grid-template-columns:repeat(3,minmax(0,1fr))}
-            .asf-stm-config .asf_stm_tab>label{grid-row:auto}
-            .asf-stm-config .asf_stm_content{grid-row:3;padding:10px}
-            .asf-stm-config .asf-stm-group-row{grid-template-columns:auto minmax(0,1fr) auto}
-            .asf-stm-config .asf-stm-group-name{grid-column:2/-1}
-            .asf-stm-config .asf-stm-group-row label{grid-column:span 1;flex-direction:column;align-items:flex-start;gap:2px}
-        }
-    `;
     const css = `#asf_stm_filters_body{max-height:calc(100vh - 95px);overflow-y:auto}.asf_stm_tabs{width:600px;display:block;margin:40px auto;position:relative}.asf_stm_tabs .asf_stm_tab{float:left;display:block}.asf_stm_tabs .asf_stm_tab>input[type="radio"]{position:absolute;top:-9999px;left:-9999px}.asf_stm_tabs .asf_stm_tab>label{display:block;padding:6px 21px;cursor:pointer;position:relative;color:#FFF;background:#4A83FD}.asf_stm_tabs .asf_stm_content{display:none;overflow:scroll;width:630px;height:380px;padding:5px;position:absolute;left:0;background:#303030;color:#DFDFDF}.asf_stm_tabs>.asf_stm_tab>[id^="asf_stm_tab"]:checked+label{top:0;background:#303030;color:#F5F5F5}.asf_stm_tabs>.asf_stm_tab>[id^="asf_stm_tab"]:checked~ [id^="asf_stm_tab-content"]{display:block}textarea{resize:none}.asf-stm-checkbox,.asf-stm-range{filter:invert(90%) hue-rotate(185deg) brightness(1.2)}.asf-stm-select,.asf-stm-input,.asf-stm-textarea{background-color:#171d25;color:white}.asf-stm-config{height:420px;margin-top:-20px;font-size:12px;margin-left:-20px;width:620px}.asf-stm-span{max-width:45%;width:45%;display:inline-block}.asf-stm-input{max-width:45%}.asf-stm-margin-right{margin-right:.4em}.asf-stm-margin-bottom{margin-bottom:.5em}.friendBlock{width:32%}input.appid-validity:invalid{background:#ff000030}input.appid-validity:valid{background:#00ff0030}.playerAvatar img.stretch:hover{width:85px}.progress-container{display:flex;justify-content:space-between;width:100%;max-width:600px;gap:1rem}.progress-step{display:flex;flex-direction:column;align-items:center;flex:1}.radial-progress{position:relative;width:74px;height:74px;border-radius:50%;background:conic-gradient(#90ba3c var(--progress), #333 0deg);display:flex;align-items:center;justify-content:center;transition:--progress 1s ease}.progress-inner{position:absolute;width:68px;height:68px;background:#121212;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:0.85rem;color:#fff;text-align:center}.full-blue{background:#53a4c4 !important;border-radius:50%;transition:none !important}.label{margin-top:0.5rem;font-size:0.9rem;color:#bbb;text-align:center}@property --progress{syntax:'<angle>';initial-value:0deg;inherits:false}`;
 
     function deepClone(object) {
         return JSON.parse(JSON.stringify(object));
-    }
-
-    function boundedLimit(value, fallback, maximum) {
-        const number = Number(value);
-        return Number.isFinite(number) && number >= 1 ? Math.min(maximum, Math.floor(number)) : fallback;
-    }
-
-    function boundedRetryLimit(value) {
-        const number = Number(value);
-        return Number.isFinite(number) ? Math.max(0, Math.min(5, Math.floor(number))) : 3;
-    }
-
-    function isUserSteamID64(value) {
-        if (!/^\d{17}$/.test(String(value))) {
-            return false;
-        }
-        const id = BigInt(value);
-        return id > 76561197960265728n && id <= 76561202255233023n;
-    }
-
-    function normalizeGroupUrl(value) {
-        const url = new URL(String(value).trim());
-        if (url.protocol !== "https:" || url.hostname !== "steamcommunity.com" || url.port || url.username || url.password || url.search || url.hash ||
-            !/^\/(?:groups\/[A-Za-z0-9_-]+|gid\/\d{18})\/?$/.test(url.pathname)) {
-            throw new Error("Use an https://steamcommunity.com/groups/name or /gid/ID group URL");
-        }
-        return `https://steamcommunity.com${url.pathname.replace(/\/$/, "")}`;
-    }
-
-    function parseTradeUrl(value, expectedPartner) {
-        const url = new URL(String(value).trim());
-        const partner = url.searchParams.get("partner");
-        const token = url.searchParams.get("token");
-        if (url.protocol !== "https:" || url.hostname !== "steamcommunity.com" || url.port || url.username || url.password || url.hash ||
-            url.pathname !== "/tradeoffer/new/" || !/^[1-9]\d{0,9}$/.test(partner || "") || Number(partner) > 4294967295 ||
-            (expectedPartner !== undefined && partner !== String(expectedPartner)) ||
-            !/^[A-Za-z0-9_-]{8}$/.test(token || "") ||
-            url.searchParams.getAll("partner").length !== 1 || url.searchParams.getAll("token").length !== 1 ||
-            Array.from(url.searchParams.keys()).some(key => key !== "partner" && key !== "token")) {
-            throw new Error("Invalid Steam trade URL or mismatched partner");
-        }
-        return {partner, token, url: `https://steamcommunity.com/tradeoffer/new/?partner=${partner}&token=${token}`};
-    }
-
-    function assertCurrentScan(generation) {
-        if (stop || generation !== scanGeneration) {
-            throw {type: "stopped"};
-        }
-    }
-
-    async function scanDelay(delay, generation, isCurrent = () => true) {
-        const deadline = Date.now() + Math.max(0, delay);
-        while (Date.now() < deadline) {
-            assertCurrentScan(generation);
-            if (!isCurrent()) {
-                throw {type: "stopped"};
-            }
-            await new Promise(resolve => setTimeout(resolve, Math.min(250, deadline - Date.now())));
-        }
-        assertCurrentScan(generation);
-        if (!isCurrent()) {
-            throw {type: "stopped"};
-        }
-    }
-
-    async function waitForSteamSlot(generation, isCurrent = () => true) {
-        while (true) {
-            assertCurrentScan(generation);
-            if (!isCurrent()) {
-                throw {type: "stopped"};
-            }
-            const wait = Math.max(steamCooldownUntil, nextSteamRequestAt) - Date.now();
-            if (wait > 0) {
-                await scanDelay(wait, generation, isCurrent);
-                continue;
-            }
-            nextSteamRequestAt = Date.now() + Math.max(Number(globalSettings.weblimiter) || 0, getAdaptiveRequestDelay());
-            return;
-        }
-    }
-
-    function sendPacedSteamRequest(xhr, generation, onCancelled, isCurrent = () => true, onDispatch = () => {}) {
-        waitForSteamSlot(generation, isCurrent).then(() => {
-            assertCurrentScan(generation);
-            if (!isCurrent()) {
-                throw {type: "stopped"};
-            }
-            activeScanRequests.add(xhr);
-            xhr.addEventListener("loadend", () => {
-                activeScanRequests.delete(xhr);
-                if (generation === scanGeneration && xhr.status === 429) {
-                    recordRequestError();
-                    steamCooldownUntil = Math.max(steamCooldownUntil, Date.now() +
-                        Math.max(5000, Number(globalSettings.errorLimiter) || 1000, retryAfterDelay(xhr.getResponseHeader("Retry-After"))));
-                }
-            });
-            xhr.onabort = () => onCancelled({type: "stopped"});
-            onDispatch();
-            xhr.send();
-        }).catch(onCancelled);
-    }
-
-    function retryAfterDelay(value, now = Date.now()) {
-        if (!value) {
-            return 0;
-        }
-        const seconds = /^\d+(?:\.\d+)?$/.test(value.trim()) ? Number(value) : NaN;
-        const delay = Number.isFinite(seconds) ? seconds * 1000 :
-            /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)/i.test(value.trim()) ? Date.parse(value) - now : 0;
-        return Number.isFinite(delay) ? Math.max(0, delay) : 0;
-    }
-
-    function sanitizeDiagnostic(value, maximum = 700) {
-        return String(value ?? "").replace(/https?:\/\/[^\s<>"']+/gi, match => {
-            try {
-                const url = new URL(match);
-                return `${url.origin}${url.pathname}`;
-            } catch (_) {
-                return "[URL removed]";
-            }
-        }).replace(/(?:token|access_token|key)\s*[=:]\s*[^&\s<>"']+/gi, "[credential removed]")
-            .replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, maximum);
-    }
-
-    function requestFailure(url, stage, response, attempts) {
-        const path = new URL(url).pathname;
-        const steam = new URL(url).hostname === "steamcommunity.com";
-        const status = Number(response.status) || 0;
-        const event = response.event || "network";
-        const detail = status ? `HTTP ${status}${event !== "load" ? ` (${event})` : ""}` : `${event}; no HTTP status`;
-        const guidance = status === 429 ? "Server reported rate limiting (429). Wait before retrying; reduce parallel requests." :
-            status === 401 || status === 403 ? steam ? "Check Steam sign-in and inventory/member-list privacy or permissions." : "Check authorization and access permissions for this source." :
-            status === 404 ? "Check that the profile/group or endpoint still exists." :
-            status >= 400 && status < 500 && status !== 408 ? "Check the request/endpoint; this response is not retried." :
-            "Check connectivity and Steam/ASF availability. Try parallel requests 1 and web limiter 1500 ms; this is not a guaranteed fix.";
-        return {
-            type: status === 401 || status === 403 ? "private" : "failed",
-            stage: sanitizeDiagnostic(stage), path, status, event, attempts,
-            message: `${sanitizeDiagnostic(stage)}: ${path} — ${detail}, ${attempts} attempt(s). ${guidance}`,
-        };
-    }
-
-    async function requestWithRetries(url, stage, generation, send) {
-        const retries = boundedRetryLimit(globalSettings.maxErrors);
-        for (let attempt = 0; attempt <= retries; attempt++) {
-            assertCurrentScan(generation);
-            const steam = new URL(url).hostname === "steamcommunity.com";
-            if (steam) {
-                await waitForSteamSlot(generation);
-            }
-            assertCurrentScan(generation);
-            let response;
-            try {
-                response = await send();
-            } catch (error) {
-                if (error?.type === "stopped") {
-                    throw error;
-                }
-                response = {status: 0, event: "network"};
-            }
-            assertCurrentScan(generation);
-            if (response.event === "load" && response.status === 200 && response.body != null) {
-                recordRequestSuccess();
-                return response.body;
-            }
-            recordRequestError();
-            const failure = requestFailure(url, stage, response, attempt + 1);
-            const transient = response.event === "network" || response.event === "timeout" ||
-                !response.status || response.status === 408 || response.status === 429 || response.status >= 500;
-            const delay = Math.max(1000, Number(globalSettings.errorLimiter) || 1000) * (attempt + 1);
-            const backoff = response.status === 429 ?
-                Math.max(delay, 5000 * Math.pow(2, attempt), retryAfterDelay(response.retryAfter)) : delay;
-            // Keep the cooldown even on exhaustion so other workers/refreshes cannot storm Steam.
-            if (steam && transient) {
-                steamCooldownUntil = Math.max(steamCooldownUntil, Date.now() + backoff);
-            }
-            if (!transient || attempt === retries) {
-                throw failure;
-            }
-            await scanDelay(backoff, generation);
-        }
-    }
-
-    async function requestSteam(url, responseType, generation, stage = "Steam request") {
-        return requestWithRetries(url, stage, generation, () => {
-            return new Promise(resolve => {
-                const xhr = new XMLHttpRequest();
-                xhr.open("GET", url, true);
-                xhr.responseType = responseType;
-                xhr.timeout = 30000;
-                activeScanRequests.add(xhr);
-                const finish = event => {
-                    activeScanRequests.delete(xhr);
-                    resolve({status: xhr.status, body: xhr.response, event,
-                        retryAfter: xhr.getResponseHeader("Retry-After")});
-                };
-                xhr.onload = () => finish("load");
-                xhr.onerror = () => finish("network");
-                xhr.ontimeout = () => finish("timeout");
-                xhr.onabort = () => finish("abort");
-                xhr.send();
-            });
-        });
-    }
-
-    async function requestSource(url, stage, generation) {
-        return requestWithRetries(url, stage, generation, () => {
-            return new Promise(resolve => {
-                let handle;
-                let finished = false;
-                const finish = (response, event) => {
-                    if (finished) {
-                        return;
-                    }
-                    finished = true;
-                    activeScanRequests.delete(handle);
-                    resolve({status: response?.status || 0, body: response?.responseText ?? response?.response, event,
-                        retryAfter: response?.responseHeaders?.match(/^Retry-After:\s*(.+)$/im)?.[1]?.trim()});
-                };
-                handle = getRequestFunc()({
-                    method: "GET", url, timeout: 30000,
-                    headers: {"User-Agent": "ASF-STM/" + GM_info.version},
-                    onload: response => finish(response, "load"),
-                    onerror: response => finish(response, "network"),
-                    ontimeout: response => finish(response, "timeout"),
-                    onabort: response => finish(response, "abort"),
-                });
-                if (!finished && typeof handle?.abort === "function") {
-                    activeScanRequests.add(handle);
-                }
-                if (typeof handle?.catch === "function") {
-                    handle.catch(response => finish(response, "network"));
-                }
-            });
-        });
-    }
-
-    async function resolveOwnSteamID64(generation) {
-        assertCurrentScan(generation);
-        if (ownSteamID64) {
-            return ownSteamID64;
-        }
-        const numericId = myProfileLink.match(/^profiles\/(\d{17})$/)?.[1];
-        if (isUserSteamID64(numericId)) {
-            ownSteamID64 = numericId;
-        } else {
-            const profile = await requestSteam(`https://steamcommunity.com/${sanitizeSteamProfilePath(myProfileLink)}/?xml=1`, "document", generation, "Verify your profile");
-            const id = profile.querySelector("profile > steamID64")?.textContent.trim();
-            if (!isUserSteamID64(id)) {
-                throw {type: "failed", message: "Could not verify your SteamID64"};
-            }
-            ownSteamID64 = id;
-        }
-        return ownSteamID64;
-    }
-
-    function showDiscoveryProgress(message) {
-        message = sanitizeDiagnostic(message);
-        const button = document.getElementById("asf_stm_button_div");
-        if (button) {
-            button.setAttribute("title", message);
-        }
-        scanStatus.progress = message;
-        renderScanStatus();
-        updateResultSummary();
-    }
-
-    function renderScanStatus() {
-        const host = document.getElementsByClassName("maincontent")[0];
-        if (!host) {
-            return;
-        }
-        let status = document.getElementById("asf_stm_status");
-        if (!status) {
-            status = document.createElement("div");
-            status.id = "asf_stm_status";
-            status.setAttribute("role", "status");
-            status.setAttribute("aria-live", "polite");
-            status.setAttribute("aria-atomic", "true");
-        }
-        host.appendChild(status);
-        status.textContent = "";
-        for (const key of ["progress", "diagnostic", "warning"]) {
-            const row = document.createElement("div");
-            row.dataset.statusRow = key;
-            row.textContent = scanStatus[key];
-            row.hidden = !scanStatus[key];
-            status.appendChild(row);
-        }
-    }
-
-    function showScanDiagnostic(error) {
-        scanStatus.diagnostic = sanitizeDiagnostic(error?.message || "Request failed; no HTTP status available");
-        renderScanStatus();
-    }
-
-    function sourceWarning(cache) {
-        const reports = Array.isArray(cache?.sourceReports) ? cache.sourceReports : [];
-        const failures = reports.filter(report => !["complete", "limited", "partial"].includes(report.status))
-            .map(report => `${report.name}: ${report.detail || report.status}`);
-        const groups = Array.isArray(cache?.groupReports) ? cache.groupReports : [];
-        const limits = groups.filter(report => report.kind === "limit" || /limit/.test(report.status));
-        groups.filter(report => report.status !== "complete" && report.status !== "discovering" && !limits.includes(report))
-            .forEach(report => failures.push(`Groups (${report.name}): ${report.detail || report.status}`));
-        const parts = [];
-        if (failures.length) {
-            parts.push(`Warning: source discovery incomplete — ${failures.join("; ")}. Successfully discovered targets are retained.`);
-        }
-        if (limits.length) {
-            parts.push(`Partial by configured limits — ${limits.map(report => `${report.name}: ${report.status}`).join("; ")}.`);
-        }
-        if (cache?.partialFailure && !reports.length && !failures.length) {
-            parts.push("Warning: cached discovery was partial; older cache has no source details. Bypass the next scan cache to diagnose.");
-        }
-        return sanitizeDiagnostic(parts.join(" "), 20000);
-    }
-
-    async function discoverGroupTargets(generation) {
-        await resolveOwnSteamID64(generation);
-        assertCurrentScan(generation);
-        const groups = globalSettings.groups.filter(group => group.enabled !== false);
-        const limit = boundedLimit(globalSettings.groupLimit, 3, 100);
-        const targets = [];
-        groupDiscoveryReports = [];
-        if (groups.length > limit) {
-            groupDiscoveryReports.push({name: "Groups", members: 0, pages: 0, kind: "limit", status: `partial: ${groups.length - limit} groups omitted by limit`});
-        }
-        for (const group of groups.slice(0, limit)) {
-            assertCurrentScan(generation);
-            const report = {name: group.url, members: 0, pages: 0, status: "discovering"};
-            groupDiscoveryReports.push(report);
-            const seen = new Set();
-            const pageLimit = boundedLimit(group.pageLimit, boundedLimit(globalSettings.groupPageLimit, 10, 1000), 1000);
-            const memberLimit = boundedLimit(group.memberLimit, boundedLimit(globalSettings.groupMemberLimit, 100, 10000), 10000);
-            try {
-                const groupUrl = normalizeGroupUrl(group.url);
-                let totalPages = 1;
-                let totalMembers = 0;
-                for (let page = 1; page <= totalPages && page <= pageLimit; page++) {
-                    const xml = await requestSteam(`${groupUrl}/memberslistxml/?xml=1&p=${page}`, "document", generation, "Groups member discovery");
-                    const currentPage = Number(xml.querySelector("currentPage")?.textContent);
-                    totalPages = Number(xml.querySelector("totalPages")?.textContent);
-                    totalMembers = Number(xml.querySelector("memberCount")?.textContent);
-                    const members = Array.from(xml.querySelectorAll("members > steamID64"), node => node.textContent.trim());
-                    if (xml.querySelector("parsererror") || currentPage !== page || !Number.isSafeInteger(totalPages) || (totalPages < page && !(totalPages === 0 && totalMembers === 0)) ||
-                        !Number.isSafeInteger(totalMembers) || totalMembers < 0 || (members.length === 0 && totalMembers > 0) ||
-                        members.some(id => !isUserSteamID64(id))) {
-                        throw {type: "failed", message: "Unexpected Steam member XML"};
-                    }
-                    report.name = xml.querySelector("groupDetails > groupName")?.textContent.trim() || groupUrl;
-                    report.pages++;
-                    if (totalMembers === 0) {
-                        report.status = "complete";
-                        break;
-                    }
-                    let capped = false;
-                    for (const id of members) {
-                        if (seen.has(id)) {
-                            continue;
-                        }
-                        seen.add(id);
-                        const partner = getPartner(id);
-                        if (id === ownSteamID64 || blacklist.includes(partner) || blacklist.includes(id)) {
-                            continue;
-                        }
-                        if (report.members >= memberLimit) {
-                            capped = true;
-                            break;
-                        }
-                        const target = normalizeWhitelistSteamID(id);
-                        target.SourceTypes = ["groups"];
-                        target.GroupNames = [report.name];
-                        target.TradeAccess = "unknown";
-                        targets.push(target);
-                        report.members++;
-                    }
-                    report.status = capped || (report.members >= memberLimit && page < totalPages) ? "partial: member limit" :
-                        page === totalPages ? (seen.size < totalMembers ? "partial: member list incomplete" : "complete") : "discovering";
-                    showDiscoveryProgress(`${report.name}: ${report.pages}/${totalPages} pages; ${report.members} eligible members; ${report.status}`);
-                    if (capped || (report.members >= memberLimit && page < totalPages)) {
-                        report.kind = "limit";
-                        break;
-                    }
-                    if (page === pageLimit && page < totalPages) {
-                        report.status = "partial: page limit";
-                        report.kind = "limit";
-                    }
-                    if (page < totalPages && page < pageLimit) {
-                        await scanDelay(getAdaptiveRequestDelay(), generation);
-                    }
-                }
-            } catch (error) {
-                if (error?.type === "stopped") {
-                    throw error;
-                }
-                report.status = `partial: ${error?.type || "failed"}`;
-                report.kind = "failure";
-                report.detail = sanitizeDiagnostic(error?.message || report.status);
-                report.diagnostic = error?.path ? {stage: error.stage, path: error.path, status: error.status, event: error.event, attempts: error.attempts} : undefined;
-            }
-        }
-        return targets;
-    }
-
-    function isNormalCard(description) {
-        const tags = description?.tags;
-        return Array.isArray(tags) &&
-            tags.some(tag => tag.category === "item_class" && tag.internal_name === "item_class_2") &&
-            tags.some(tag => tag.category === "cardborder" && tag.internal_name === "cardborder_0");
-    }
-
-    function isTradableItem(item) {
-        return item?.tradable === 1 || item?.tradable === "1" || item?.tradable === true;
-    }
-
-    function setTargetInventoryStatus(target, status) {
-        if (target.CountedInventoryStatus) {
-            inventoryScanStatuses[target.CountedInventoryStatus]--;
-            if (inventoryScanStatuses[target.CountedInventoryStatus] <= 0) {
-                delete inventoryScanStatuses[target.CountedInventoryStatus];
-            }
-        }
-        target.InventoryStatus = status;
-        target.CountedInventoryStatus = status;
-        inventoryScanStatuses[status] = (inventoryScanStatuses[status] || 0) + 1;
-        updateResultSummary();
     }
 
     function getRequestFunc() {
@@ -730,9 +245,6 @@
                 const consumed = consumption.get(card.hash) || 0;
                 if (consumed > 0) {
                     card.count = Math.max(0, card.count - consumed);
-                    if (Number.isFinite(card.tradableCount)) {
-                        card.tradableCount = Math.max(0, card.tradableCount - consumed);
-                    }
                 }
             });
         });
@@ -749,28 +261,6 @@
             }
         });
         return reconciledBadges;
-    }
-
-    function getReconciledTargetBadges(target, badges) {
-        const reconciled = deepClone(badges);
-        if (!target.InventorySnapshotTime) {
-            return reconciled;
-        }
-        const consumption = new Map();
-        Object.values(getCompletedTradeStore().trades).forEach(trade => {
-            if (String(trade.partner) !== target.TradePartner || Number(trade.completedAt) <= target.InventorySnapshotTime) {
-                return;
-            }
-            (trade.receiveCardNames || []).forEach(hash => consumption.set(hash, (consumption.get(hash) || 0) + 1));
-        });
-        reconciled.forEach(badge => badge.cards.forEach(card => {
-            const used = consumption.get(card.hash) || 0;
-            card.count = Math.max(0, card.count - used);
-            if (Number.isFinite(card.tradableCount)) {
-                card.tradableCount = Math.max(0, card.tradableCount - used);
-            }
-        }));
-        return reconciled;
     }
 
     function parseTradeOfferState(documentElement) {
@@ -853,8 +343,6 @@
         return {
             scanBots: globalSettings.scanBots !== false,
             scanFriends: globalSettings.scanFriends !== false,
-            scanGroups: globalSettings.scanGroups === true,
-            groupSettings: JSON.stringify([globalSettings.groups, globalSettings.groupLimit, globalSettings.groupMemberLimit, globalSettings.groupPageLimit, globalSettings.tradeUrls]),
         };
     }
 
@@ -871,24 +359,18 @@
         if (match !== undefined) {
             tradeUrl += `&match=${match}`;
         }
-        if (target.SourceTypes.includes("groups")) {
-            tradeUrl += "&groupmatch=1";
-        }
         return tradeUrl;
     }
 
     function getTargetSourceLabel(target) {
-        const labels = {asf: "ASF", friends: "Friend", whitelist: "Whitelist", groups: "Group"};
-        let label = target.SourceTypes.map(source => labels[source] || source).join(" + ");
-        if (target.SourceTypes.includes("groups")) {
-            label += ` (${(target.GroupNames || []).join(", ") || "Steam group"}; ${target.InventoryStatus || "not scanned"}; trade access ${target.TradeAccess || "unknown"})`;
+        if (target.SourceTypes.length > 1) {
+            return 'ASF + Friend';
         }
-        return label;
+        return target.SourceTypes[0] === 'friends' ? 'Friend' : 'ASF';
     }
 
     function getTargetSourceBadge(target) {
-        const label = escapeHtml(getTargetSourceLabel(target));
-        return `<span class="avatar_block_status_${target.SourceTypes.includes('asf') ? 'in-game' : 'online'}" style="font-size: 8px; cursor:help" title="Scanned via ${label}">&nbsp;${label}&nbsp;</span>`;
+        return `<span class="avatar_block_status_${target.SourceTypes.includes('asf') ? 'in-game' : 'online'}" style="font-size: 8px; cursor:help" title="Scanned via ${getTargetSourceLabel(target)}">&nbsp;${getTargetSourceLabel(target).toUpperCase()}&nbsp;</span>`;
     }
 
     function normalizeBot(bot) {
@@ -947,15 +429,11 @@
         const merged = new Map();
         targetGroups.flat().forEach((target) => {
             const key = String(target.TradePartner);
-            if (blacklist.includes(key) || blacklist.includes(String(target.SteamID64)) || (ownSteamID64 && key === getPartner(ownSteamID64))) {
-                return;
-            }
             if (!merged.has(key)) {
                 merged.set(key, target);
                 return;
             }
             const current = merged.get(key);
-            current.GroupNames = Array.from(new Set([...(current.GroupNames || []), ...(target.GroupNames || [])]));
             current.SourceTypes = Array.from(new Set(current.SourceTypes.concat(target.SourceTypes))).sort();
             if ((!current.ProfilePath || current.ProfilePath.startsWith('profiles/')) && target.ProfilePath && !target.ProfilePath.startsWith('profiles/')) {
                 current.ProfilePath = target.ProfilePath;
@@ -978,7 +456,7 @@
         if (target.SourceTypes.length > 1) {
             return "shared";
         }
-        return target.SourceTypes[0] === "friends" ? "friends" : target.SourceTypes[0] === "whitelist" ? "whitelist" : target.SourceTypes[0] === "groups" ? "groups" : "asf";
+        return target.SourceTypes[0] === "friends" ? "friends" : target.SourceTypes[0] === "whitelist" ? "whitelist" : "asf";
     }
 
     function getSourceLabel(sourceKey) {
@@ -989,8 +467,6 @@
                 return "Friends only";
             case "whitelist":
                 return "Whitelist only";
-            case "groups":
-                return "Groups only";
             case "shared":
                 return "Shared";
             default:
@@ -1019,8 +495,8 @@
             return;
         }
 
-        const targetCounts = { all: 0, asf: 0, friends: 0, whitelist: 0, groups: 0, shared: 0 };
-        const matchCounts = { all: 0, asf: 0, friends: 0, whitelist: 0, groups: 0, shared: 0, visible: 0 };
+        const targetCounts = { all: 0, asf: 0, friends: 0, whitelist: 0, shared: 0 };
+        const matchCounts = { all: 0, asf: 0, friends: 0, whitelist: 0, shared: 0, visible: 0 };
 
         if (bots?.Result) {
             targetCounts.all = bots.Result.length;
@@ -1043,18 +519,10 @@
             `ASF: <b>${targetCounts.asf}</b>`,
             `Friends: <b>${targetCounts.friends}</b>`,
             `Whitelist: <b>${targetCounts.whitelist}</b>`,
-            `Groups: <b>${targetCounts.groups}</b>`,
             `Shared: <b>${targetCounts.shared}</b>`,
             `Matches: <b>${matchCounts.all}</b>`,
             `Visible: <b>${matchCounts.visible}</b>`,
         ].join("&ensp;|&ensp;");
-        const detail = document.createElement("div");
-        detail.style.color = "#e5c07b";
-        detail.textContent = ["Potential matches from badge counts; tradability is checked when preparing offers."].concat(
-            groupDiscoveryReports.map(report => `${report.name}: ${report.members} members, ${report.pages} pages (${report.status})`),
-            Object.entries(inventoryScanStatuses).map(([status, count]) => `${status}: ${count}`)
-        ).join(" | ");
-        summary.appendChild(detail);
     }
 
     function syncResultControlStates() {
@@ -1072,7 +540,7 @@
 
     function applyResultView() {
         document.querySelectorAll(".asf-stm-result-row").forEach((row) => {
-            const isVisibleSource = resultView.sourceFilter === "all" || row.dataset.sourceKey === resultView.sourceFilter || (resultView.sourceFilter === "groups" && row.dataset.sources.split(",").includes("groups"));
+            const isVisibleSource = resultView.sourceFilter === "all" || row.dataset.sourceKey === resultView.sourceFilter;
             row.dataset.sourceHidden = isVisibleSource ? "false" : "true";
             row.style.order = resultView.grouping === "source" ? String(getSourceOrder(row.dataset.sourceKey) * 1000000 + Number(row.dataset.resultIndex)) : row.dataset.resultIndex;
             checkRow(row);
@@ -1136,7 +604,6 @@
                     headers: {
                         "User-Agent": "ASF-STM/" + GM_info.version,
                     },
-                    timeout: 30000,
                     onload: function (response) {
                         if (response.status !== 200) {
                             resolve();
@@ -1215,13 +682,10 @@
         return !(cache === null ||
             cache.cacheTime === undefined ||
             cache.cacheTime === null ||
-            cache.profileLink !== myProfileLink ||
             cache.cacheTime + botCacheTime < Date.now() ||
             cache.sourceState === undefined ||
             cache.sourceState.scanBots !== enabledSources.scanBots ||
             cache.sourceState.scanFriends !== enabledSources.scanFriends ||
-            cache.sourceState.scanGroups !== enabledSources.scanGroups ||
-            cache.sourceState.groupSettings !== enabledSources.groupSettings ||
             cache.sourceState.whitelist !== whitelist.join(","));
     }
 
@@ -1296,7 +760,6 @@
     // pool. `cancelToken.cancelled` is set as soon as the pool settles (success or failure) so
     // any still-in-flight worker can detect it and avoid mutating shared state afterwards.
     function runIndexedWorkerPool(total, concurrency, worker) {
-        const generation = scanGeneration;
         return new Promise((resolve, reject) => {
             const cancelToken = {cancelled: false};
             if (total <= 0) {
@@ -1318,7 +781,7 @@
                 if (settled) {
                     return;
                 }
-                if (stop || generation !== scanGeneration) {
+                if (stop) {
                     settleOnce(reject, {type: 'stopped'});
                     return;
                 }
@@ -1513,7 +976,7 @@
         if (!Array.isArray(entry.badges) || entry.badges.length !== expected.appIds.length) {
             return false;
         }
-        return entry.provenance === "badge-counts" && Number.isFinite(entry.snapshotTime) && entry.badges.every(isValidBadgeSnapshot);
+        return entry.badges.every(isValidBadgeSnapshot);
     }
 
     function isInventoryCacheEntryFresh(entry) {
@@ -1539,7 +1002,6 @@
             return {
                 badges: deepClone(entry.badges),
                 cacheTime: entry.cacheTime,
-                snapshotTime: entry.snapshotTime,
                 stale: stale,
             };
         }
@@ -1575,8 +1037,6 @@
         const store = loadInventoryCacheStore();
         store.entries[cacheKey] = {
             version: CACHE_SCHEMA_VERSION,
-            provenance: "badge-counts",
-            snapshotTime: payload.snapshotTime || now,
             cacheTime: now,
             lastUsedTime: now,
             entryType: payload.entryType,
@@ -1630,14 +1090,13 @@
     }
 
     function isInventoryRefreshCurrent(cacheGeneration, refreshScanGeneration) {
-        return !stop && cacheGeneration === inventoryCacheGeneration && refreshScanGeneration === scanGeneration;
+        return cacheGeneration === inventoryCacheGeneration && refreshScanGeneration === scanGeneration;
     }
 
     function refreshOwnInventoryCacheEntry(cacheKey, cacheMeta, badgeTemplates) {
         const cacheGeneration = inventoryCacheGeneration;
         const refreshScanGeneration = scanGeneration;
         enqueueInventoryCacheRefresh(cacheKey, function (done) {
-            const snapshotTime = Date.now();
             const refreshedBadges = deepClone(badgeTemplates);
             let refreshErrors = 0;
             function refreshBadge(index) {
@@ -1657,7 +1116,6 @@
                         scopeKey: cacheMeta.scopeKey,
                         appIds: cacheMeta.appIds,
                         badges: refreshedBadges,
-                        snapshotTime,
                     }, true);
                     done();
                     return;
@@ -1666,7 +1124,6 @@
                 let xhr = new XMLHttpRequest();
                 xhr.open("GET", `https://steamcommunity.com/${myProfileLink}/ajaxgetbadgeinfo/${refreshedBadges[index].appId}`, true);
                 xhr.responseType = "json";
-                xhr.timeout = 30000;
                 xhr.onload = function () {
                     if (!isInventoryRefreshCurrent(cacheGeneration, refreshScanGeneration)) {
                         done();
@@ -1695,7 +1152,7 @@
                         // Retry below.
                     }
                     refreshErrors++;
-                    if ((status < 400 || status === 408 || status === 429 || status >= 500) && refreshErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
+                    if ((status < 400 || status >= 500) && refreshErrors <= globalSettings.maxErrors) {
                         setTimeout(function () {
                             refreshBadge(index);
                         }, globalSettings.weblimiter + globalSettings.errorLimiter * refreshErrors);
@@ -1709,7 +1166,7 @@
                         return;
                     }
                     refreshErrors++;
-                    if (refreshErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
+                    if (refreshErrors <= globalSettings.maxErrors) {
                         setTimeout(function () {
                             refreshBadge(index);
                         }, globalSettings.weblimiter + globalSettings.errorLimiter * refreshErrors);
@@ -1717,8 +1174,7 @@
                         failInventoryCacheRefresh(done);
                     }
                 };
-                xhr.ontimeout = xhr.onerror;
-                sendPacedSteamRequest(xhr, refreshScanGeneration, done, () => isInventoryRefreshCurrent(cacheGeneration, refreshScanGeneration));
+                xhr.send();
             }
             refreshBadge(0);
         });
@@ -1729,7 +1185,6 @@
         const refreshScanGeneration = scanGeneration;
         const cardHashes = myBadges.map((badge) => Object.fromEntries(badge.cards.map((card) => [card.number, card.hash])));
         enqueueInventoryCacheRefresh(cacheKey, function (done) {
-            const snapshotTime = Date.now();
             const refreshedBadges = deepClone(badgeTemplates);
             let refreshErrors = 0;
             function refreshBadge(index, idLink) {
@@ -1749,7 +1204,6 @@
                         scopeKey: cacheMeta.scopeKey,
                         appIds: cacheMeta.appIds,
                         badges: refreshedBadges,
-                        snapshotTime,
                     }, true);
                     done();
                     return;
@@ -1758,7 +1212,6 @@
                 let xhr = new XMLHttpRequest();
                 xhr.open("GET", `https://steamcommunity.com/${idLink ?? getTargetProfileLink(target)}/gamecards/${refreshedBadges[index].appId}`, true);
                 xhr.responseType = "document";
-                xhr.timeout = 30000;
                 xhr.onload = function () {
                     if (!isInventoryRefreshCurrent(cacheGeneration, refreshScanGeneration)) {
                         done();
@@ -1801,7 +1254,7 @@
                         }
                     }
                     refreshErrors++;
-                    if ((status < 400 || status === 408 || status === 429 || status >= 500) && refreshErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
+                    if ((status < 400 || status >= 500) && refreshErrors <= globalSettings.maxErrors) {
                         setTimeout(function () {
                             refreshBadge(index, idLink);
                         }, globalSettings.weblimiter + globalSettings.errorLimiter * refreshErrors);
@@ -1815,7 +1268,7 @@
                         return;
                     }
                     refreshErrors++;
-                    if (refreshErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
+                    if (refreshErrors <= globalSettings.maxErrors) {
                         setTimeout(function () {
                             refreshBadge(index, idLink);
                         }, globalSettings.weblimiter + globalSettings.errorLimiter * refreshErrors);
@@ -1823,8 +1276,7 @@
                         failInventoryCacheRefresh(done);
                     }
                 };
-                xhr.ontimeout = xhr.onerror;
-                sendPacedSteamRequest(xhr, refreshScanGeneration, done, () => isInventoryRefreshCurrent(cacheGeneration, refreshScanGeneration));
+                xhr.send();
             }
             refreshBadge(0);
         });
@@ -1883,16 +1335,13 @@
     }
 
     function finalizeTargetInventoryAfterLoad(userindex) {
-        const generation = scanGeneration;
         finalizeBadgeCollection(botBadges, false);
         bots.Result[userindex].badgesSnapshot = deepClone(botBadges);
         compareCards(userindex, function () {
             setTimeout(
                 (function (userindex) {
                     return function () {
-                        if (!stop && generation === scanGeneration) {
-                            GetCards(0, userindex);
-                        }
+                        GetCards(0, userindex);
                     };
                 })(userindex + 1),
                 getAdaptiveRequestDelay(),
@@ -1922,119 +1371,6 @@
                 </div>
             </div>
         `.replaceAll(/(  |\n)/g, '');
-    }
-
-    function createGroupSettingsPanel(configDialog) {
-        const tab = document.createElement("li");
-        tab.className = "asf_stm_tab";
-        tab.innerHTML = `<input type="radio" id="asf_stm_tab_groups" name="asf_stm_tabs"><label for="asf_stm_tab_groups">Groups</label>
-            <div id="asf_stm_tab-content-groups" class="asf_stm_content">
-            <fieldset><legend>SCAN LIMITS</legend>
-            <div class="asf-stm-group-defaults">
-            <label for="groupLimit">Groups per scan</label><input id="groupLimit" class="asf-stm-input" type="number" min="1" max="100">
-            <label for="groupMemberLimit">Default members/group</label><input id="groupMemberLimit" class="asf-stm-input" type="number" min="1" max="10000">
-            <label for="groupPageLimit">Default pages/group</label><input id="groupPageLimit" class="asf-stm-input" type="number" min="1" max="1000">
-            </div>
-            <p>Limits may produce partial scans. Groups do not grant trade permission. Unknown access requires manual review; group offers never auto-send.</p>
-            </fieldset>
-            <fieldset><legend>SAVED GROUPS</legend>
-            <div class="asf-stm-group-add">
-            <input id="addGroupUrl" class="asf-stm-input" type="url" aria-label="Steam group URL" placeholder="https://steamcommunity.com/groups/name">
-            <button id="addGroupButton" type="button" class="btn_blue_steamui btn_small"><span>Add group</span></button>
-            </div>
-            <div id="groupSettingsStatus" role="status"></div>
-            <div id="savedGroups"></div>
-            </fieldset>
-            <fieldset><legend>TRADE URLS</legend>
-            <p>Optional Steam trade URLs (one per line, including partner and token). Tokens are stored locally. Only the matching partner receives a token.</p>
-            <textarea id="groupTradeUrls" class="asf-stm-textarea" aria-label="Steam trade URLs" rows="4" autocomplete="off"></textarea>
-            </fieldset>
-            </div>`;
-        configDialog.querySelector(".asf_stm_tabs").appendChild(tab);
-        for (const key of ["groupLimit", "groupMemberLimit", "groupPageLimit"]) {
-            tab.querySelector(`#${key}`).value = globalSettings[key];
-        }
-        tab.querySelector("#groupTradeUrls").value = globalSettings.tradeUrls.join("\n");
-        function addRow(group) {
-            const row = document.createElement("div");
-            row.className = "asf-stm-group-row";
-            row.dataset.groupUrl = group.url;
-            const checkbox = document.createElement("input");
-            checkbox.type = "checkbox";
-            checkbox.className = "asf-stm-checkbox";
-            checkbox.setAttribute("aria-label", `Scan ${group.url}`);
-            checkbox.checked = group.enabled !== false;
-            checkbox.dataset.groupEnabled = "true";
-            row.appendChild(checkbox);
-            const label = document.createElement("a");
-            label.className = "asf-stm-group-name";
-            label.href = normalizeGroupUrl(group.url);
-            label.textContent = new URL(label.href).pathname.replace(/^\/|\/$/g, "");
-            label.title = group.url;
-            label.target = "_blank";
-            label.rel = "noopener noreferrer";
-            row.appendChild(label);
-            for (const [key, title, max] of [["memberLimit", "Members", 10000], ["pageLimit", "Pages", 1000]]) {
-                const field = document.createElement("label");
-                field.textContent = title;
-                const input = document.createElement("input");
-                input.type = "number";
-                input.min = "1";
-                input.max = String(max);
-                input.className = "asf-stm-input";
-                input.placeholder = "default";
-                input.dataset.groupLimit = key;
-                input.value = group[key] || "";
-                field.appendChild(input);
-                row.appendChild(field);
-            }
-            const remove = document.createElement("button");
-            remove.type = "button";
-            remove.className = "btn_darkred_white_innerfade btn_small";
-            const removeLabel = document.createElement("span");
-            removeLabel.textContent = "Remove";
-            remove.appendChild(removeLabel);
-            remove.setAttribute("aria-label", `Remove ${group.url}`);
-            remove.addEventListener("click", () => row.remove());
-            row.appendChild(remove);
-            tab.querySelector("#savedGroups").appendChild(row);
-        }
-        globalSettings.groups.forEach(addRow);
-        tab.querySelector("#addGroupButton").addEventListener("click", () => {
-            const status = tab.querySelector("#groupSettingsStatus");
-            try {
-                const url = normalizeGroupUrl(tab.querySelector("#addGroupUrl").value);
-                if (Array.from(tab.querySelectorAll("[data-group-url]")).some(row => row.dataset.groupUrl.toLowerCase() === url.toLowerCase())) {
-                    throw new Error("Group already saved");
-                }
-                addRow({url, enabled: true});
-                tab.querySelector("#addGroupUrl").value = "";
-                status.textContent = "Group added; click Save to persist.";
-            } catch (error) {
-                status.textContent = error.message;
-            }
-        });
-    }
-
-    function readGroupSettings(configDialog) {
-        const tradeUrls = configDialog.querySelector("#groupTradeUrls").value.split(/\r?\n/).map(line => line.trim()).filter(Boolean).map(line => parseTradeUrl(line).url);
-        const partners = tradeUrls.map(url => parseTradeUrl(url).partner);
-        if (new Set(partners).size !== partners.length) {
-            throw new Error("Provide only one trade URL per partner");
-        }
-        return {
-            scanGroups: configDialog.querySelector("#scanGroups").checked,
-            groupLimit: boundedLimit(configDialog.querySelector("#groupLimit").value, 3, 100),
-            groupMemberLimit: boundedLimit(configDialog.querySelector("#groupMemberLimit").value, 100, 10000),
-            groupPageLimit: boundedLimit(configDialog.querySelector("#groupPageLimit").value, 10, 1000),
-            groups: Array.from(configDialog.querySelectorAll("[data-group-url]"), row => ({
-                url: normalizeGroupUrl(row.dataset.groupUrl),
-                enabled: row.querySelector("[data-group-enabled]").checked,
-                memberLimit: row.querySelector('[data-group-limit="memberLimit"]').value ? boundedLimit(row.querySelector('[data-group-limit="memberLimit"]').value, 100, 10000) : null,
-                pageLimit: row.querySelector('[data-group-limit="pageLimit"]').value ? boundedLimit(row.querySelector('[data-group-limit="pageLimit"]').value, 10, 1000) : null,
-            })),
-            tradeUrls,
-        };
     }
 
     function ShowConfigDialog() {
@@ -2074,16 +1410,10 @@
         }
         const scanFiltersTemplate = globalSettings.scanFilters.map(x => createScanFilterElement(x.active, x.appId, x.title)).join('');
 
-        const configDialogTemplate = `<div class="asf-stm-config"><ul class="asf_stm_tabs" style="margin: 0;padding: 0;"><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab1" name="asf_stm_tabs" checked><label for="asf_stm_tab1">Matcher</label><div id="asf_stm_tab-content1" class="asf_stm_content"><fieldset><legend>SCAN SOURCES</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Bots</span><input type="checkbox" id="scanBots" ${globalSettings.scanBots ? 'checked' : ''} class="asf-stm-checkbox"><br><span class="asf-stm-margin-right">Friends</span><input type="checkbox" id="scanFriends" ${globalSettings.scanFriends ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="All enabled sources are scanned together in one run."><img src="${questionmarkURL}"></a></div></fieldset><fieldset><legend>ASF BOTS</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Match with "Any" bots</span><input type="checkbox" id="anyBots" ${globalSettings.anyBots ? 'checked' : ''} class="asf-stm-checkbox"><br><span class="asf-stm-margin-right">Match with "Fair" bots</span><input type="checkbox" id="fairBots" ${globalSettings.fairBots ? 'checked' : ''} class="asf-stm-checkbox"></div><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Minimum items:</span><input type="number" id="botMinItems" value=${globalSettings.botMinItems} min="0" class="asf-stm-input"><br><span class="asf-stm-margin-right">Maximum items:</span><input type="number" id="botMaxItems" value=${globalSettings.botMaxItems} min="0" class="asf-stm-input"><a class="tooltip hover_tooltip" data-tooltip-text="Don't match with bots that has less or more than required limit of items in steam inventory. 0 means no limit on number of items"><img src="${questionmarkURL}"></a></div><div class="asf-stm-margin-bottom">${Array.from({ length: 4 }, (_, i) => createSortSelect(i)).join('')}</div></fieldset><fieldset><legend>INTERFACE</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Game filter pop-up background color:</span><input type="color" id="filterBackgroundColor" value="${filterBG[0]}" class="asf-stm-input" style="margin-right: 1.5em;"><span class="asf-stm-margin-right">opacity:</span><input type="range" id="filterBackgroundAlpha" value=${filterBG[1]} min=0 max=1 step=0.01 class="asf-stm-range" style="height: 4px;"><br></div><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Sort results by game name</span><input type="checkbox" id="sortByName" class="asf-stm-checkbox" ${globalSettings.sortByName ? 'checked' : ''}></div><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Prevent navigation or page leave</span><input type="checkbox" id="preventClose" class="asf-stm-checkbox" ${globalSettings.preventClose ? 'checked' : ''}><a class="tooltip hover_tooltip" data-tooltip-text="A dialog box will prevent navigation and exitting the page to avoid losing progess."><img src="${questionmarkURL}"></a></div></fieldset><fieldset><legend>INVENTORY CACHE</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Enable cache</span><input type="checkbox" id="enableInventoryCache" ${globalSettings.enableInventoryCache ? 'checked' : ''} class="asf-stm-checkbox"><br><span class="asf-stm-span">Refresh after (minutes):</span><input type="number" id="inventoryCacheTtlMinutes" value=${globalSettings.inventoryCacheTtlMinutes} min="1" class="asf-stm-input"><br><span class="asf-stm-span">Max entries:</span><input type="number" id="inventoryCacheMaxEntries" value=${globalSettings.inventoryCacheMaxEntries} min="1" class="asf-stm-input"><br><span class="asf-stm-margin-right">Bypass next scan</span><input type="checkbox" id="forceFreshScan" ${globalSettings.forceFreshScan ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Skips cached scan-target and inventory data once, then turns itself off after that run. Stale inventory stays saved and can refresh later."><img src="${questionmarkURL}"></a></div><div class="asf-stm-margin-bottom"><button id="clearInventoryCache" class="btn_darkred_white_innerfade btn_small asf-stm-margin-right"><span>Clear inventory cache</span></button><span data-asf-stm-cache-status style="color:#8F98A0;"></span></div></fieldset><fieldset style="display: grid;grid-template-columns: repeat(2, 1fr);grid-template-rows: repeat(4, 1fr);gap: 12px;"><legend>SETTINGS</legend><fieldset style="grid-row: span 4 / span 4;grid-column-start: 2;grid-row-start: 1;"><legend>DEVELOPER</legend><div><span class="asf-stm-margin-right">Debug</span><input type="checkbox" id="debug" ${globalSettings.debug ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Enable additional output to console"><img src="${questionmarkURL}"></a></div></fieldset><div><span class="asf-stm-span">Web limiter delay (ms):</span><input type="number" id="weblimiter" value= ${globalSettings.weblimiter} min=0 class="asf-stm-input"></div><div style="grid-column-start: 1;grid-row-start: 2;"><span class="asf-stm-span">Delay on error (ms):</span><input type="number" id="errorLimiter" value=${globalSettings.errorLimiter} min=0 class="asf-stm-input"></div><div style="grid-column-start: 1;grid-row-start: 3;"><span class="asf-stm-span">Max errors:</span><input type="number" id="maxErrors" value=${globalSettings.maxErrors} min=0 class="asf-stm-input"></div><div style="grid-column-start: 1;grid-row-start: 4;"><span class="asf-stm-span">Parallel requests:</span><input type="number" id="scanConcurrency" value=${globalSettings.scanConcurrency} min=1 class="asf-stm-input"><a class="tooltip hover_tooltip" data-tooltip-text="Number of badge requests to fetch at the same time per scan target. Higher values scan faster but increase the risk of rate limiting."><img src="${questionmarkURL}"></a></div></fieldset></div></li><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab2" name="asf_stm_tabs"><label for="asf_stm_tab2">Trade helper</label><div id="asf_stm_tab-content2" class="asf_stm_content"><fieldset><legend>TRADE OFFER MESSAGE</legend><textarea id="tradeMessage" name="tradeMessage" rows="4" cols="60" class="asf-stm-textarea"></textarea><a class="tooltip hover_tooltip" data-tooltip-text="Custom text that will be included automatically with your trade offers created through STM while using this userscript. To remove this functionality, simply delete the text."><img src="${questionmarkURL}"></a></fieldset><fieldset><legend>ACTION AFTER TRADE</legend><label for="after-trade" class="asf-stm-margin-right">After trade...</label><select id="doAfterTrade" name="after-trade" class="asf-stm-select asf-stm-margin-bottom"><option value="NOTHING" ${globalSettings.doAfterTrade === "NOTHING" ? 'selected' : ''}>Do Nothing</option><option value="CLOSE_WINDOW" ${globalSettings.doAfterTrade === "CLOSE_WINDOW" ? 'selected' : ''}>Close window</option><option value="CLICK_OK" ${globalSettings.doAfterTrade === "CLICK_OK" ? 'selected' : ''}>Click OK</option></select><a class="tooltip hover_tooltip" data-tooltip-html="<p>Determines what happens when you complete a trade offer.</p><ul><li><strong>Do nothing</strong>: Will do nothing more than the normal behavior.</li><li><strong>Close window</strong>: Will close the window after the trade offer is sent.</li><li><strong>Click OK</strong>: Will redirect you to the trade offers recap page.</li></ul>"><img src="${questionmarkURL}"></a></fieldset><fieldset><legend>CARDS OFFER</legend><label for="cards-order" class="asf-stm-margin-right">Cards order</label><select id="order" name="cards-order" class="form-control asf-stm-select asf-stm-margin-bottom"><option value="SORT" ${globalSettings.order === "SORT" ? 'selected' : ''}>Sorted</option><option value="RANDOM" ${globalSettings.order === "RANDOM" ? 'selected' : ''}>Random</option><option value="AS_IS" ${globalSettings.order === "AS_IS" ? 'selected' : ''}>As is</option></select><a class="tooltip hover_tooltip" data-tooltip-html="<p>Determines which card is added to trade.</p><ul><li><strong>Sorted</strong>: Will sort cards by their IDs before adding to trade. If you make several trade offers with the same card and one of them is accepted, the rest will have message &quot;cards unavilable to trade&quot;.</li><li><strong>Random</strong>: Will add cards to trade randomly. If you make several trade offers and one of them is accepted, only some of them will be unavilable for trade.</li><li><strong>As is</strong>: Script doesn't change anything in order. Results vary depending on browser, steam servers, weather...</li></ul>"><img src="${questionmarkURL}"></a></fieldset><fieldset><legend>AUTO-SEND TRADE OFFER</legend><div class="asf-stm-margin-bottom"><label for="auto-send" class="asf-stm-margin-right">Enable</label><input type="checkbox" id="autoSend" name="auto-send" value="1" ${globalSettings.autoSend ? 'checked' : ''} class="asf-stm-checkbox asf-stm-margin-bottom"><a class="tooltip hover_tooltip" data-tooltip-text="Makes it possible for the script to automatically send trade offers without any action on your side. This is not recommended as you should always check your trade offers, but, well, this is a possible thing. Please note that incomplete trade offers (missing cards, ...) won't be sent automatically even when this parameter is set to true."><img src="${questionmarkURL}"></a></div></fieldset></div></li><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab3" name="asf_stm_tabs"><label for="asf_stm_tab3">Blacklist</label><div id="asf_stm_tab-content3" class="asf_stm_content"><div class="title_text profile_xp_block_remaining"><h1 style="margin: 0.5em;">Ignored SteamIDs</h1><textarea class="asf-stm-textarea" id="blacklist" name="Blacklist" rows="17" cols="63"></textarea></div></div></li><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab4" name="asf_stm_tabs"><label for="asf_stm_tab4">Whitelist</label><div class="asf_stm_content" id="asf_stm_tab-content4"><div class="title_text profile_xp_block_remaining"><h1 style="margin: 0.5em;">Additional SteamIDs to scan</h1><textarea class="asf-stm-textarea" id="whitelist" name="Whitelist" rows="17" cols="63"></textarea></div></div></li><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab5" name="asf_stm_tabs"><label for="asf_stm_tab5">Scan filters</label><div class="asf_stm_content" id="asf_stm_tab-content5"><fieldset><legend>SETTINGS</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Use scan filters</span><input type="checkbox" id="useScanFilters" ${globalSettings.useScanFilters ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Filter badges to cut short the duration of the scan."><img src="${questionmarkURL}"></a><br><span class="asf-stm-margin-right">Auto add new scan filters</span><input type="checkbox" id="autoAddScanFilters" ${globalSettings.autoAddScanFilters ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Add new scan filters from a fresh scan (clear all your filters)."><img src="${questionmarkURL}"></a><br><span class="asf-stm-margin-right">Auto delete old scan filters</span><input type="checkbox" id="autoDeleteScanFilters" ${globalSettings.autoDeleteScanFilters ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Delete scan filters from badges without duplicates."><img src="${questionmarkURL}"></a></div></fieldset><fieldset><legend>MANAGE SCAN FILTERS</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">App Id:</span><input type="number" id="addScanFilterAppId" step="10" required class="asf-stm-input asf-stm-margin-right appid-validity"><button id="addScanFilterButton" class="btn_blue_steamui btn_small asf-stm-margin-right"><span>Add scan filter</span></button><span id="addScanFilterStatus"></span></div><div class="asf-stm-margin-bottom"><button onclick="document.querySelector('#clearScanFilters').style.visibility = 'visible'" class="btn_plum btn_small asf-stm-margin-right"><span>Clear scan filters</span></button><button id="clearScanFilters" class="btn_darkred_white_innerfade btn_small" style="visibility: hidden;"><span>Are you sure?</span></button></div></fieldset><fieldset><legend>FILTERS</legend><div id="asf-stm-filters" style="column-gap: 4px;display: flex;flex-wrap: wrap;justify-content: flex-start;">${scanFiltersTemplate}</div></fieldset></div></li></ul></div>`;
+        const configDialogTemplate = `<div class="asf-stm-config"><ul class="asf_stm_tabs" style="margin: 0;padding: 0;"><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab1" name="asf_stm_tabs" checked><label for="asf_stm_tab1">Matcher</label><div id="asf_stm_tab-content1" class="asf_stm_content"><fieldset><legend>SCAN SOURCES</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Scan ASF bots</span><input type="checkbox" id="scanBots" ${globalSettings.scanBots ? 'checked' : ''} class="asf-stm-checkbox"><br><span class="asf-stm-margin-right">Scan Steam friends</span><input type="checkbox" id="scanFriends" ${globalSettings.scanFriends ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="All enabled sources are scanned together in one run."><img src="${questionmarkURL}"></a></div></fieldset><fieldset><legend>ASF BOTS</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Match with "Any" bots</span><input type="checkbox" id="anyBots" ${globalSettings.anyBots ? 'checked' : ''} class="asf-stm-checkbox"><br><span class="asf-stm-margin-right">Match with "Fair" bots</span><input type="checkbox" id="fairBots" ${globalSettings.fairBots ? 'checked' : ''} class="asf-stm-checkbox"></div><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Minimum items:</span><input type="number" id="botMinItems" value=${globalSettings.botMinItems} min="0" class="asf-stm-input"><br><span class="asf-stm-margin-right">Maximum items:</span><input type="number" id="botMaxItems" value=${globalSettings.botMaxItems} min="0" class="asf-stm-input"><a class="tooltip hover_tooltip" data-tooltip-text="Don't match with bots that has less or more than required limit of items in steam inventory. 0 means no limit on number of items"><img src="${questionmarkURL}"></a></div><div class="asf-stm-margin-bottom">${Array.from({ length: 4 }, (_, i) => createSortSelect(i)).join('')}</div></fieldset><fieldset><legend>INTERFACE</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Game filter pop-up background color:</span><input type="color" id="filterBackgroundColor" value="${filterBG[0]}" class="asf-stm-input" style="margin-right: 1.5em;"><span class="asf-stm-margin-right">opacity:</span><input type="range" id="filterBackgroundAlpha" value=${filterBG[1]} min=0 max=1 step=0.01 class="asf-stm-range" style="height: 4px;"><br></div><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Sort results by game name</span><input type="checkbox" id="sortByName" class="asf-stm-checkbox" ${globalSettings.sortByName ? 'checked' : ''}></div><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Prevent navigation or page leave</span><input type="checkbox" id="preventClose" class="asf-stm-checkbox" ${globalSettings.preventClose ? 'checked' : ''}><a class="tooltip hover_tooltip" data-tooltip-text="A dialog box will prevent navigation and exitting the page to avoid losing progess."><img src="${questionmarkURL}"></a></div></fieldset><fieldset><legend>INVENTORY CACHE</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Enable cache</span><input type="checkbox" id="enableInventoryCache" ${globalSettings.enableInventoryCache ? 'checked' : ''} class="asf-stm-checkbox"><br><span class="asf-stm-span">Refresh after (minutes):</span><input type="number" id="inventoryCacheTtlMinutes" value=${globalSettings.inventoryCacheTtlMinutes} min="1" class="asf-stm-input"><br><span class="asf-stm-span">Max entries:</span><input type="number" id="inventoryCacheMaxEntries" value=${globalSettings.inventoryCacheMaxEntries} min="1" class="asf-stm-input"><br><span class="asf-stm-margin-right">Bypass next scan</span><input type="checkbox" id="forceFreshScan" ${globalSettings.forceFreshScan ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Skips cached scan-target and inventory data once, then turns itself off after that run. Stale inventory stays saved and can refresh later."><img src="${questionmarkURL}"></a></div><div class="asf-stm-margin-bottom"><button id="clearInventoryCache" class="btn_darkred_white_innerfade btn_small asf-stm-margin-right"><span>Clear inventory cache</span></button><span data-asf-stm-cache-status style="color:#8F98A0;"></span></div></fieldset><fieldset style="display: grid;grid-template-columns: repeat(2, 1fr);grid-template-rows: repeat(4, 1fr);gap: 12px;"><legend>SETTINGS</legend><fieldset style="grid-row: span 4 / span 4;grid-column-start: 2;grid-row-start: 1;"><legend>DEVELOPER</legend><div><span class="asf-stm-margin-right">Debug</span><input type="checkbox" id="debug" ${globalSettings.debug ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Enable additional output to console"><img src="${questionmarkURL}"></a></div></fieldset><div><span class="asf-stm-span">Web limiter delay (ms):</span><input type="number" id="weblimiter" value= ${globalSettings.weblimiter} min=0 class="asf-stm-input"></div><div style="grid-column-start: 1;grid-row-start: 2;"><span class="asf-stm-span">Delay on error (ms):</span><input type="number" id="errorLimiter" value=${globalSettings.errorLimiter} min=0 class="asf-stm-input"></div><div style="grid-column-start: 1;grid-row-start: 3;"><span class="asf-stm-span">Max errors:</span><input type="number" id="maxErrors" value=${globalSettings.maxErrors} min=0 class="asf-stm-input"></div><div style="grid-column-start: 1;grid-row-start: 4;"><span class="asf-stm-span">Parallel requests:</span><input type="number" id="scanConcurrency" value=${globalSettings.scanConcurrency} min=1 class="asf-stm-input"><a class="tooltip hover_tooltip" data-tooltip-text="Number of badge requests to fetch at the same time per scan target. Higher values scan faster but increase the risk of rate limiting."><img src="${questionmarkURL}"></a></div></fieldset></div></li><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab2" name="asf_stm_tabs"><label for="asf_stm_tab2">Trade helper</label><div id="asf_stm_tab-content2" class="asf_stm_content"><fieldset><legend>TRADE OFFER MESSAGE</legend><textarea id="tradeMessage" name="tradeMessage" rows="4" cols="60" class="asf-stm-textarea"></textarea><a class="tooltip hover_tooltip" data-tooltip-text="Custom text that will be included automatically with your trade offers created through STM while using this userscript. To remove this functionality, simply delete the text."><img src="${questionmarkURL}"></a></fieldset><fieldset><legend>ACTION AFTER TRADE</legend><label for="after-trade" class="asf-stm-margin-right">After trade...</label><select id="doAfterTrade" name="after-trade" class="asf-stm-select asf-stm-margin-bottom"><option value="NOTHING" ${globalSettings.doAfterTrade === "NOTHING" ? 'selected' : ''}>Do Nothing</option><option value="CLOSE_WINDOW" ${globalSettings.doAfterTrade === "CLOSE_WINDOW" ? 'selected' : ''}>Close window</option><option value="CLICK_OK" ${globalSettings.doAfterTrade === "CLICK_OK" ? 'selected' : ''}>Click OK</option></select><a class="tooltip hover_tooltip" data-tooltip-html="<p>Determines what happens when you complete a trade offer.</p><ul><li><strong>Do nothing</strong>: Will do nothing more than the normal behavior.</li><li><strong>Close window</strong>: Will close the window after the trade offer is sent.</li><li><strong>Click OK</strong>: Will redirect you to the trade offers recap page.</li></ul>"><img src="${questionmarkURL}"></a></fieldset><fieldset><legend>CARDS OFFER</legend><label for="cards-order" class="asf-stm-margin-right">Cards order</label><select id="order" name="cards-order" class="form-control asf-stm-select asf-stm-margin-bottom"><option value="SORT" ${globalSettings.order === "SORT" ? 'selected' : ''}>Sorted</option><option value="RANDOM" ${globalSettings.order === "RANDOM" ? 'selected' : ''}>Random</option><option value="AS_IS" ${globalSettings.order === "AS_IS" ? 'selected' : ''}>As is</option></select><a class="tooltip hover_tooltip" data-tooltip-html="<p>Determines which card is added to trade.</p><ul><li><strong>Sorted</strong>: Will sort cards by their IDs before adding to trade. If you make several trade offers with the same card and one of them is accepted, the rest will have message &quot;cards unavilable to trade&quot;.</li><li><strong>Random</strong>: Will add cards to trade randomly. If you make several trade offers and one of them is accepted, only some of them will be unavilable for trade.</li><li><strong>As is</strong>: Script doesn't change anything in order. Results vary depending on browser, steam servers, weather...</li></ul>"><img src="${questionmarkURL}"></a></fieldset><fieldset><legend>AUTO-SEND TRADE OFFER</legend><div class="asf-stm-margin-bottom"><label for="auto-send" class="asf-stm-margin-right">Enable</label><input type="checkbox" id="autoSend" name="auto-send" value="1" ${globalSettings.autoSend ? 'checked' : ''} class="asf-stm-checkbox asf-stm-margin-bottom"><a class="tooltip hover_tooltip" data-tooltip-text="Makes it possible for the script to automatically send trade offers without any action on your side. This is not recommended as you should always check your trade offers, but, well, this is a possible thing. Please note that incomplete trade offers (missing cards, ...) won't be sent automatically even when this parameter is set to true."><img src="${questionmarkURL}"></a></div></fieldset></div></li><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab3" name="asf_stm_tabs"><label for="asf_stm_tab3">Blacklist</label><div id="asf_stm_tab-content3" class="asf_stm_content"><div class="title_text profile_xp_block_remaining"><h1 style="margin: 0.5em;">Ignored SteamIDs</h1><textarea class="asf-stm-textarea" id="blacklist" name="Blacklist" rows="17" cols="63"></textarea></div></div></li><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab4" name="asf_stm_tabs"><label for="asf_stm_tab4">Whitelist</label><div class="asf_stm_content" id="asf_stm_tab-content4"><div class="title_text profile_xp_block_remaining"><h1 style="margin: 0.5em;">Additional SteamIDs to scan</h1><textarea class="asf-stm-textarea" id="whitelist" name="Whitelist" rows="17" cols="63"></textarea></div></div></li><li class="asf_stm_tab"><input type="radio" id="asf_stm_tab5" name="asf_stm_tabs"><label for="asf_stm_tab5">Scan filters</label><div class="asf_stm_content" id="asf_stm_tab-content5"><fieldset><legend>SETTINGS</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">Use scan filters</span><input type="checkbox" id="useScanFilters" ${globalSettings.useScanFilters ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Filter badges to cut short the duration of the scan."><img src="${questionmarkURL}"></a><br><span class="asf-stm-margin-right">Auto add new scan filters</span><input type="checkbox" id="autoAddScanFilters" ${globalSettings.autoAddScanFilters ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Add new scan filters from a fresh scan (clear all your filters)."><img src="${questionmarkURL}"></a><br><span class="asf-stm-margin-right">Auto delete old scan filters</span><input type="checkbox" id="autoDeleteScanFilters" ${globalSettings.autoDeleteScanFilters ? 'checked' : ''} class="asf-stm-checkbox"><a class="tooltip hover_tooltip" data-tooltip-text="Delete scan filters from badges without duplicates."><img src="${questionmarkURL}"></a></div></fieldset><fieldset><legend>MANAGE SCAN FILTERS</legend><div class="asf-stm-margin-bottom"><span class="asf-stm-margin-right">App Id:</span><input type="number" id="addScanFilterAppId" step="10" required class="asf-stm-input asf-stm-margin-right appid-validity"><button id="addScanFilterButton" class="btn_blue_steamui btn_small asf-stm-margin-right"><span>Add scan filter</span></button><span id="addScanFilterStatus"></span></div><div class="asf-stm-margin-bottom"><button onclick="document.querySelector('#clearScanFilters').style.visibility = 'visible'" class="btn_plum btn_small asf-stm-margin-right"><span>Clear scan filters</span></button><button id="clearScanFilters" class="btn_darkred_white_innerfade btn_small" style="visibility: hidden;"><span>Are you sure?</span></button></div></fieldset><fieldset><legend>FILTERS</legend><div id="asf-stm-filters" style="column-gap: 4px;display: flex;flex-wrap: wrap;justify-content: flex-start;">${scanFiltersTemplate}</div></fieldset></div></li></ul></div>`;
         let templateElement = document.createElement("template");
-        const scanSourcesTemplate = `<fieldset><legend>SCAN SOURCES</legend><div class="asf-stm-scan-sources">${[
-            ["scanBots", "ASF bots", "Discover matching bots from the ASF listing."],
-            ["scanFriends", "Friends", "All enabled sources are scanned together in one run."],
-            ["scanGroups", "Groups", "Discover members of enabled saved Steam groups within configured limits."],
-        ].map(([id, name, tooltip]) => `<div class="asf-stm-scan-source"><label for="${id}"><input type="checkbox" id="${id}" class="asf-stm-checkbox" ${globalSettings[id] ? "checked" : ""}><span>${name}</span></label><a class="tooltip hover_tooltip" data-tooltip-text="${tooltip}"><img src="${questionmarkURL}" alt="Help"></a></div>`).join("")}</div></fieldset>`;
-        templateElement.innerHTML = configDialogTemplate.replace(/<fieldset><legend>SCAN SOURCES<\/legend>.*?<\/fieldset>/, scanSourcesTemplate);
+        templateElement.innerHTML = configDialogTemplate;
         let configDialog = templateElement.content.firstChild;
-        createGroupSettingsPanel(configDialog);
         configDialog.querySelector("#tradeMessage").value = globalSettings.tradeMessage;
         configDialog.querySelector("#blacklist").value = arrayToText(blacklist);
         configDialog.querySelector("#whitelist").value = arrayToText(whitelist);
@@ -2094,14 +1424,6 @@
 
         unsafeWindow.ShowConfirmDialog("ASF STM Configuration", configDialog, "Save", "Cancel", "Reset").done(function (button) {
             if (button === "OK") {
-                let groupSettings;
-                try {
-                    groupSettings = readGroupSettings(configDialog);
-                } catch (error) {
-                    unsafeWindow.ShowAlertDialog("Settings not saved", error.message);
-                    return;
-                }
-                Object.assign(globalSettings, groupSettings);
                 globalSettings.scanBots = configDialog.querySelector("#scanBots").checked;
                 globalSettings.scanFriends = configDialog.querySelector("#scanFriends").checked;
                 globalSettings.anyBots = configDialog.querySelector("#anyBots").checked;
@@ -2137,7 +1459,7 @@
                 let newInventoryCacheMaxEntries = Number(configDialog.querySelector("#inventoryCacheMaxEntries").value);
                 globalSettings.inventoryCacheMaxEntries = isNaN(newInventoryCacheMaxEntries) || newInventoryCacheMaxEntries <= 0 ? defaultSettings.inventoryCacheMaxEntries : Math.floor(newInventoryCacheMaxEntries);
                 globalSettings.forceFreshScan = configDialog.querySelector("#forceFreshScan").checked;
-                if (!globalSettings.scanBots && !globalSettings.scanFriends && !globalSettings.scanGroups && whitelist.length === 0) {
+                if (!globalSettings.scanBots && !globalSettings.scanFriends) {
                     globalSettings.scanBots = true;
                 }
                 globalSettings.useScanFilters = configDialog.querySelector("#useScanFilters").checked;
@@ -2149,7 +1471,7 @@
                 whitelist = textToArray(configDialog.querySelector("#whitelist").value);
                 SaveConfig();
                 resetCacheStats();
-            } else if (button !== "CANCEL") {
+            } else {
                 unsafeWindow.ShowConfirmDialog("CONFIRMATION", "Are you sure you want to restore default settings?").done(function () {
                     ResetConfig();
                     SaveConfig();
@@ -2195,23 +1517,9 @@
             delete globalSettings.matchFriends;
             SaveConfig();
         }
-        if (globalSettings.scanBots === false && globalSettings.scanFriends === false && !globalSettings.scanGroups && whitelist.length === 0) {
+        if (globalSettings.scanBots === false && globalSettings.scanFriends === false) {
             globalSettings.scanBots = true;
         }
-        globalSettings.groups = Array.isArray(globalSettings.groups) ? globalSettings.groups.flatMap(group => {
-            try {
-                return [{...group, url: normalizeGroupUrl(group.url)}];
-            } catch (error) {
-                return [];
-            }
-        }) : [];
-        globalSettings.tradeUrls = Array.isArray(globalSettings.tradeUrls) ? globalSettings.tradeUrls.flatMap(url => {
-            try {
-                return [parseTradeUrl(url).url];
-            } catch (error) {
-                return [];
-            }
-        }) : [];
         if (isNaN(Number(globalSettings.inventoryCacheTtlMinutes)) || Number(globalSettings.inventoryCacheTtlMinutes) <= 0) {
             globalSettings.inventoryCacheTtlMinutes = defaultSettings.inventoryCacheTtlMinutes;
         }
@@ -2501,7 +1809,7 @@
         const safeAppIdList = appIdList.map((value) => sanitizeAppId(value)).filter(Boolean).join();
         const safeAvatarHash = sanitizeAvatarHash(target.AvatarHash);
         const safeInventoryCount = Number.isFinite(Number(target.TotalInventoryCount)) ? Number(target.TotalInventoryCount) : 0;
-        const safeSourceTypes = target.SourceTypes.filter((value) => value === "asf" || value === "friends" || value === "whitelist" || value === "groups").join(',');
+        const safeSourceTypes = target.SourceTypes.filter((value) => value === "asf" || value === "friends" || value === "whitelist").join(',');
         const safeSteamId = sanitizeAppId(target.SteamID);
         const safeBotProfileLink = sanitizeSteamProfilePath(botProfileLink);
         let rowTemplate = `<div id="asfstmbot_${index}" class="badge_row asf-stm-result-row" data-result-index="${index}" data-source-key="${sourceKey}" data-source-hidden="false" data-sources="${safeSourceTypes}" style="order:${index};"><div class="badge_row_inner"><div class="badge_title_row guide_showcase_contributors"><div class="badge_title_stats"><a class="filter_all" target="_blank" rel="noopener noreferrer" style="margin-right: 1em"><div class="btn_darkblue_white_innerfade btn_medium" data-appids="${safeAppIdList}"><span data-appids="${safeAppIdList}">Filter All</span></div></a><a class="full_trade_url" href="${safeTradeUrlFull}" target="_blank" rel="noopener noreferrer"><div class="btn_darkblue_white_innerfade btn_medium"><span>Offer a trade for all</span></div></a></div><div style="float: left;" class=""><div class="user_avatar playerAvatar online"><a target="_blank" rel="noopener noreferrer" href="https://steamcommunity.com/${safeBotProfileLink}"><img src="https://avatars.cloudflare.steamstatic.com/${safeAvatarHash}.jpg" /></a></div></div><div class="badge_title">&nbsp;<a target="_blank" rel="noopener noreferrer" href="https://steamcommunity.com/${safeBotProfileLink}">${sanitizeNickname(target.Nickname)}</a>${sourceBadge}${any}&ensp;<span style="color: #8F98A0;">(${safeInventoryCount} items)</span></div><div class="badge_title_stats"><span style="color:#8F98A0;margin-right:0.75em;">${getSourceLabel(sourceKey)}</span><a id="blacklist_${safeSteamId}" data-tooltip-text="Blacklist this target" class="tooltip hover_tooltip"><img src="https://community.cloudflare.steamstatic.com/public/images/skin_1/iconForumBan.png?v=1"></a></div></div><div class="badge_title_rule"></div>${matches}</div></div>`;
@@ -2530,12 +1838,6 @@
 
     function storeMatches(steamID, itemsToSend, itemsToReceive) {
         let partner = getPartner(steamID);
-        const target = bots?.Result?.find(entry => entry.TradePartner === partner);
-        tradeParams.targetSafety = tradeParams.targetSafety || {};
-        tradeParams.targetSafety[partner] = {
-            manualReview: target?.SourceTypes.includes("groups") === true || (globalSettings.scanGroups && (!target?.TradeAccess || target.TradeAccess === "unknown")),
-            tradeAccess: target?.TradeAccess || "unknown",
-        };
         tradeParams.matches[partner] = {};
         for (let i = 0; i < itemsToSend.length; i++) {
             if (tradeParams.matches[partner][itemsToSend[i].appId] === undefined) {
@@ -2569,42 +1871,31 @@
     function buildMatchesForTarget(index, availableMyBadges, targetBadges) {
         let itemsToSend = [];
         let itemsToReceive = [];
-        const ownBadgesByAppId = new Map(availableMyBadges.map(badge => [Number(badge.appId), badge]));
 
         for (let i = 0; i < targetBadges.length; i++) {
-            const targetBadge = targetBadges[i];
-            const ownBadge = targetBadge && ownBadgesByAppId.get(Number(targetBadge.appId));
-            if (!ownBadge || ownBadge.unmatchable || !Number.isSafeInteger(Number(targetBadge.appId)) || Number(targetBadge.appId) <= 0 ||
-                !Array.isArray(targetBadge.cards) || targetBadge.cards.length === 0) {
+            if (!availableMyBadges[i] || availableMyBadges[i].unmatchable || !targetBadges[i] || !Array.isArray(targetBadges[i].cards) || targetBadges[i].cards.length === 0) {
                 continue;
             }
-            let myBadge = deepClone(ownBadge);
-            let theirBadge = deepClone(targetBadge);
-            const originalCardsByNumber = new Map(ownBadge.cards.map((card) => [card.number, card]));
+            let myBadge = deepClone(availableMyBadges[i]);
+            let theirBadge = deepClone(targetBadges[i]);
+            const originalCardsByNumber = new Map(availableMyBadges[i].cards.map((card) => [card.number, card]));
             let myState = calcState(myBadge);
             while (myState < 2) {
                 let foundMatch = false;
                 for (let j = 0; j < theirBadge.maxCards; j++) {
                     //index of card they give
-                    if (theirBadge.cards[j].count > 0 && (theirBadge.cards[j].tradableCount ?? theirBadge.cards[j].count) > 0) {
+                    if (theirBadge.cards[j].count > 0) {
                         //try to match
                         let myInd = myBadge.cards.findIndex((a) => a.number === theirBadge.cards[j].number); //index of slot where we receive card
-                        if (myInd < 0) {
-                            continue;
-                        }
                         if ((myState === 0 && myBadge.cards[myInd].count < myBadge.maxSets) || (myState === 1 && myBadge.cards[myInd].count < myBadge.lastSet)) {
                             //we need this for the Emperor
                             //find a card to match.
                             for (let k = 0; k < myInd; k++) {
                                 //index of card we give
-                                if ((myBadge.cards[k].tradableCount ?? myBadge.cards[k].count) > 0 &&
-                                    ((myState === 0 && myBadge.cards[k].count > myBadge.maxSets) || (myState === 1 && myBadge.cards[k].count > myBadge.lastSet))) {
+                                if ((myState === 0 && myBadge.cards[k].count > myBadge.maxSets) || (myState === 1 && myBadge.cards[k].count > myBadge.lastSet)) {
                                     //that's fine for us
                                     let theirInd = theirBadge.cards.findIndex((a) => a.number === myBadge.cards[k].number); //index of slot where they will receive card
-                                    if (theirInd < 0) {
-                                        continue;
-                                    }
-                                    if (!bots.Result[index].MatchEverything || bots.Result[index].SourceTypes.includes("groups")) {
+                                    if (!bots.Result[index].MatchEverything) {
                                         //make sure it's neutral+ for them
                                         if (theirBadge.cards[theirInd].count >= theirBadge.cards[j].count) {
                                             continue; //it's not neutral+, check other options
@@ -2646,9 +1937,6 @@
                                     theirBadge.cards[theirInd].count += 1;
                                     //remove this item from our inventory
                                     myBadge.cards[k].count -= 1;
-                                    if (Number.isFinite(myBadge.cards[k].tradableCount)) {
-                                        myBadge.cards[k].tradableCount -= 1;
-                                    }
 
                                     //fill items to receive
                                     let receiveMatch = itemsToReceive.find((item) => item.appId == myBadge.appId);
@@ -2671,9 +1959,6 @@
                                     myBadge.cards[myInd].count += 1;
                                     //remove this item from their inventory
                                     theirBadge.cards[j].count -= 1;
-                                    if (Number.isFinite(theirBadge.cards[j].tradableCount)) {
-                                        theirBadge.cards[j].tradableCount -= 1;
-                                    }
                                     foundMatch = true;
                                     break; //found a match!
                                 }
@@ -2698,7 +1983,7 @@
 
     function compareCards(index, callback) {
         const target = bots.Result[index];
-        const targetBadges = getReconciledTargetBadges(target, Array.isArray(target.badgesSnapshot) ? target.badgesSnapshot : botBadges);
+        const targetBadges = Array.isArray(target.badgesSnapshot) ? target.badgesSnapshot : botBadges;
         const availableMyBadges = getReconciledMyBadges();
         const computedMatches = buildMatchesForTarget(index, availableMyBadges, targetBadges);
         let itemsToSend = computedMatches.itemsToSend;
@@ -2737,9 +2022,8 @@
         resetRenderedMatches();
         const availableMyBadges = getReconciledMyBadges();
         for (let i = 0; i < bots.Result.length; i++) {
-            const storedTargetBadges = bots.Result[i].badgesSnapshot;
-            const targetBadges = Array.isArray(storedTargetBadges) ? getReconciledTargetBadges(bots.Result[i], storedTargetBadges) : null;
-            if (!Array.isArray(targetBadges)) {
+            const targetBadges = bots.Result[i].badgesSnapshot;
+            if (!Array.isArray(targetBadges) || targetBadges.length !== availableMyBadges.length) {
                 continue;
             }
             const computedMatches = buildMatchesForTarget(i, availableMyBadges, targetBadges);
@@ -2755,12 +2039,10 @@
     }
 
     function fetchOwnBadgeWithRetry(badges, index, invalidIndices, cancelToken) {
-        const generation = scanGeneration;
         return new Promise((resolve, reject) => {
             let localErrors = 0;
-            let attempts = 0;
             function attempt() {
-                if (stop || generation !== scanGeneration || cancelToken.cancelled) {
+                if (stop || cancelToken.cancelled) {
                     reject({type: 'stopped'});
                     return;
                 }
@@ -2770,10 +2052,9 @@
                 let xhr = new XMLHttpRequest();
                 xhr.open("GET", url, true);
                 xhr.responseType = "json";
-                xhr.timeout = 30000;
                 // eslint-disable-next-line
                 xhr.onload = function () {
-                    if (stop || generation !== scanGeneration || cancelToken.cancelled) {
+                    if (stop || cancelToken.cancelled) {
                         reject({type: 'stopped'});
                         return;
                     }
@@ -2808,7 +2089,7 @@
                                     localErrors++;
                                 }
                             } else {
-                                reject(requestFailure(url, "Your badge inventory", {status, event: "load"}, attempts));
+                                reject({type: 'fatal', message: `Badge data fetch error: ${badges[index].appId}`});
                                 return;
                             }
                         } catch (error) {
@@ -2818,38 +2099,33 @@
                         localErrors++;
                     }
                     recordRequestError();
-                    if ((status < 400 || status === 408 || status === 429 || status >= 500) && localErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
+                    if ((status < 400 || status >= 500) && localErrors <= globalSettings.maxErrors) {
                         setTimeout(attempt, globalSettings.weblimiter + globalSettings.errorLimiter * localErrors);
                     } else {
-                        reject(requestFailure(url, "Your badge inventory", {status, event: "load"}, attempts));
+                        reject({type: 'fatal', message: `Error getting badge data: ${status}`});
                     }
                 };
                 // eslint-disable-next-line
-                xhr.onerror = function (event) {
-                    if (stop || generation !== scanGeneration || cancelToken.cancelled) {
+                xhr.onerror = function () {
+                    if (stop || cancelToken.cancelled) {
                         reject({type: 'stopped'});
                         return;
                     }
                     localErrors++;
                     recordRequestError();
-                    if (localErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
+                    if (localErrors <= globalSettings.maxErrors) {
                         setTimeout(attempt, globalSettings.weblimiter + globalSettings.errorLimiter * localErrors);
                     } else {
-                        reject(requestFailure(url, "Your badge inventory", {status: xhr.status, event: event === "timeout" ? "timeout" : "network"}, attempts));
+                        reject({type: 'fatal', message: 'Max error rate reached'});
                     }
                 };
-                xhr.ontimeout = () => xhr.onerror("timeout");
-                sendPacedSteamRequest(xhr, generation, reject, () => !cancelToken.cancelled, () => attempts++);
+                xhr.send();
             }
             attempt();
         });
     }
 
-    function GetOwnCards(index, generation = scanGeneration) {
-        const cacheGeneration = inventoryCacheGeneration;
-        if (stop || generation !== scanGeneration) {
-            return;
-        }
+    function GetOwnCards(index) {
 
         if (index === 0) {
             ownInventorySnapshotTime = 0;
@@ -2865,7 +2141,7 @@
                     refreshOwnInventoryCacheEntry(cacheKey, cacheMeta, myBadges);
                 }
                 myBadges = cachedInventory.badges;
-                ownInventorySnapshotTime = cachedInventory.snapshotTime;
+                ownInventorySnapshotTime = cachedInventory.cacheTime;
                 rememberCardNames(myBadges);
                 markProgressComplete('badges');
                 finalizeOwnInventoryAfterLoad();
@@ -2873,54 +2149,39 @@
             }
 
             const badges = myBadges;
-            const snapshotTime = Date.now();
             const invalidIndices = new Set();
             runIndexedWorkerPool(badges.length, getScanConcurrency(), (i, cancelToken) => fetchOwnBadgeWithRetry(badges, i, invalidIndices, cancelToken))
                 .then(() => {
-                    if (stop || generation !== scanGeneration) {
-                        return;
-                    }
                     Array.from(invalidIndices).sort((a, b) => b - a).forEach((invalidIndex) => {
                         badges.splice(invalidIndex, 1);
                     });
                     const finalCacheMeta = buildInventoryCacheMeta("self", myProfileLink, "self", badges);
-                    if (cacheGeneration === inventoryCacheGeneration) {
-                        setInventoryCacheEntry(buildInventoryCacheKey(finalCacheMeta.entryType, finalCacheMeta.profileId, finalCacheMeta.sourceType, finalCacheMeta.scopeKey), {
-                            entryType: finalCacheMeta.entryType,
-                            sourceType: finalCacheMeta.sourceType,
-                            profileId: finalCacheMeta.profileId,
-                            scopeKey: finalCacheMeta.scopeKey,
-                            appIds: finalCacheMeta.appIds,
-                            badges: badges,
-                            snapshotTime,
-                        });
-                    }
-                    ownInventorySnapshotTime = snapshotTime;
+                    setInventoryCacheEntry(buildInventoryCacheKey(finalCacheMeta.entryType, finalCacheMeta.profileId, finalCacheMeta.sourceType, finalCacheMeta.scopeKey), {
+                        entryType: finalCacheMeta.entryType,
+                        sourceType: finalCacheMeta.sourceType,
+                        profileId: finalCacheMeta.profileId,
+                        scopeKey: finalCacheMeta.scopeKey,
+                        appIds: finalCacheMeta.appIds,
+                        badges: badges,
+                    });
+                    ownInventorySnapshotTime = Date.now();
                     finalizeOwnInventoryAfterLoad();
                 })
                 .catch((error) => {
-                    if (generation !== scanGeneration) {
-                        return;
-                    }
                     if (stop || error?.type === 'stopped') {
                         stopEventCleanup('User interrupt');
                         return;
                     }
-                    showScanDiagnostic(error);
                     stopEventCleanup(error?.message ?? 'Error getting badge data');
                 });
         }
     }
 
     function fetchTargetBadgeWithRetry(badges, index, target, idLinkRef, cancelToken) {
-        const generation = scanGeneration;
-        const ownBadge = myBadges.find(badge => Number(badge.appId) === Number(badges[index].appId));
-        const ownCardsByNumber = new Map((ownBadge?.cards || []).map(card => [card.number, card.hash]));
         return new Promise((resolve, reject) => {
             let localErrors = 0;
-            let attempts = 0;
             function attempt() {
-                if (stop || generation !== scanGeneration || cancelToken.cancelled) {
+                if (stop || cancelToken.cancelled) {
                     reject({type: 'stopped'});
                     return;
                 }
@@ -2931,18 +2192,16 @@
                 let xhr = new XMLHttpRequest();
                 xhr.open("GET", url, true);
                 xhr.responseType = "document";
-                xhr.timeout = 30000;
                 // eslint-disable-next-line
                 xhr.onload = function () {
-                    if (stop || generation !== scanGeneration || cancelToken.cancelled) {
+                    if (stop || cancelToken.cancelled) {
                         reject({type: 'stopped'});
                         return;
                     }
                     let status = xhr.status;
                     if (status === 200) {
                         if (null === xhr.response.documentElement.querySelector(".badge_card_set_cards")) {
-                            reject({...requestFailure(url, "Target badge inventory", {status, event: "load"}, attempts),
-                                type: "private", message: `Target badge inventory: ${new URL(url).pathname} — HTTP 200, ${attempts} attempt(s); cards unavailable/private. Check inventory privacy.`});
+                            reject({type: 'private'});
                             return;
                         }
                         let badgeCards = xhr.response.documentElement.querySelectorAll(".badge_card_set_card");
@@ -2960,11 +2219,7 @@
                                     }
                                 });
                                 name = name.trim();
-                                let markethash = ownCardsByNumber.get(i);
-                                if (!markethash) {
-                                    reject({type: 'fatal', message: `Missing card template for ${badges[index].appId}`});
-                                    return;
-                                }
+                                let markethash = myBadges[index].cards.find((card) => card.number === i).hash;
                                 let icon = badgeCards[i].querySelector(".gamecard").src.trim();
                                 let newcard = {
                                     item: name,
@@ -2990,79 +2245,63 @@
                         localErrors++;
                     }
                     recordRequestError();
-                    if ((status < 400 || status === 408 || status === 429 || status >= 500) && localErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
+                    if ((status < 400 || status >= 500) && localErrors <= globalSettings.maxErrors) {
                         setTimeout(attempt, globalSettings.weblimiter + globalSettings.errorLimiter * localErrors);
                     } else {
-                        reject(requestFailure(url, "Target badge inventory", {status, event: "load"}, attempts));
+                        reject({type: 'fatal', message: `Error getting badge data: ${status}`});
                     }
                 };
                 // eslint-disable-next-line
-                xhr.onerror = function (event) {
-                    if (stop || generation !== scanGeneration || cancelToken.cancelled) {
+                xhr.onerror = function () {
+                    if (stop || cancelToken.cancelled) {
                         reject({type: 'stopped'});
                         return;
                     }
                     localErrors++;
                     recordRequestError();
-                    if (localErrors <= boundedRetryLimit(globalSettings.maxErrors)) {
+                    if (localErrors <= globalSettings.maxErrors) {
                         setTimeout(attempt, globalSettings.weblimiter + globalSettings.errorLimiter * localErrors);
                     } else {
-                        reject(requestFailure(url, "Target badge inventory", {status: xhr.status, event: event === "timeout" ? "timeout" : "network"}, attempts));
+                        reject({type: 'fatal', message: 'Max error rate reached'});
                     }
                 };
-                xhr.ontimeout = () => xhr.onerror("timeout");
-                sendPacedSteamRequest(xhr, generation, reject, () => !cancelToken.cancelled, () => attempts++);
+                xhr.send();
             }
             attempt();
         });
     }
 
     function scanTargetBadges(userindex) {
-        const generation = scanGeneration;
-        const cacheGeneration = inventoryCacheGeneration;
         const target = bots.Result[userindex];
         const badges = botBadges;
-        const snapshotTime = Date.now();
         const idLinkRef = {value: undefined};
         runIndexedWorkerPool(badges.length, getScanConcurrency(), (i, cancelToken) => fetchTargetBadgeWithRetry(badges, i, target, idLinkRef, cancelToken))
             .then(() => {
-                if (stop || generation !== scanGeneration) {
-                    return;
-                }
                 const cacheMeta = buildInventoryCacheMeta("target", target.SteamID, getTargetInventorySourceType(target), badges);
-                if (cacheGeneration === inventoryCacheGeneration) {
-                    setInventoryCacheEntry(buildInventoryCacheKey(cacheMeta.entryType, cacheMeta.profileId, cacheMeta.sourceType, cacheMeta.scopeKey), {
-                        entryType: cacheMeta.entryType,
-                        sourceType: cacheMeta.sourceType,
-                        profileId: cacheMeta.profileId,
-                        scopeKey: cacheMeta.scopeKey,
-                        appIds: cacheMeta.appIds,
-                        badges: badges,
-                        snapshotTime,
-                    });
-                }
-                target.InventorySnapshotTime = snapshotTime;
-                setTargetInventoryStatus(target, "badge counts");
+                setInventoryCacheEntry(buildInventoryCacheKey(cacheMeta.entryType, cacheMeta.profileId, cacheMeta.sourceType, cacheMeta.scopeKey), {
+                    entryType: cacheMeta.entryType,
+                    sourceType: cacheMeta.sourceType,
+                    profileId: cacheMeta.profileId,
+                    scopeKey: cacheMeta.scopeKey,
+                    appIds: cacheMeta.appIds,
+                    badges: badges,
+                });
                 finalizeTargetInventoryAfterLoad(userindex);
             })
             .catch((error) => {
-                if (generation !== scanGeneration) {
-                    return;
-                }
                 if (stop || error?.type === 'stopped') {
                     stopEventCleanup('User interrupt');
                     return;
                 }
-                if (error?.type === 'private' || error?.type === 'fatal' || error?.type === 'failed') {
+                if (error?.type === 'private') {
                     updateProgress('bots');
-                    setTargetInventoryStatus(target, error.type === "private" ? "private/unavailable" : "failed");
-                    showScanDiagnostic(error);
+                    // Blacklist private users, saves time
+                    blacklist.push(target.SteamID);
+                    SaveConfig();
                     setTimeout(
                         (function (userindex) {
                             return function () {
-                                if (!stop && generation === scanGeneration) {
-                                    GetCards(0, userindex);
-                                }
+                                GetCards(0, userindex);
                             };
                         })(userindex + 1),
                         globalSettings.weblimiter,
@@ -3074,36 +2313,32 @@
     }
 
     function GetCards(index, userindex) {
-        if (stop) {
-            return;
-        }
 
         if (index === 0 && userindex === 0) {
             progressRadials.botBadges.steps = myBadges.length;
         }
 
         if (userindex >= bots.Result.length) {
-            markProgressComplete("bots");
-            const partial = bots.partialFailure || groupDiscoveryReports.some(report => report.status !== "complete") ||
-                Object.keys(inventoryScanStatuses).some(status => /failed|private|stale/.test(status));
-            stopEventCleanup(partial ? "Scan finished (partial or stale results)" : "Scan completed");
+            updateProgress('bots');
+            stopEventCleanup('Scan completed');
             return;
         }
 
         const target = bots.Result[userindex];
-        const isAsfTarget = target.SourceTypes.includes('asf') && !target.SourceTypes.includes("groups");
+        const isAsfTarget = target.SourceTypes.includes('asf');
         if (
             (isAsfTarget && target.MatchEverything && !globalSettings.anyBots) ||
             (isAsfTarget && !target.MatchEverything && !globalSettings.fairBots) ||
             (isAsfTarget && target.TotalInventoryCount < globalSettings.botMinItems) ||
             (isAsfTarget && globalSettings.botMaxItems > 0 && target.TotalInventoryCount > globalSettings.botMaxItems) ||
-            blacklist.includes(target.SteamID) || blacklist.includes(String(target.SteamID64)) || (ownSteamID64 && getPartner(ownSteamID64) === target.TradePartner)
+            blacklist.includes(target.SteamID)
         ) {
             updateProgress('bots');
             updateProgress('botBadges');
             GetCards(0, userindex + 1);
             return;
         }
+
         // scan bot badge step
         if (index === 0) {
             botBadges.length = 0;
@@ -3121,8 +2356,6 @@
                     refreshTargetInventoryCacheEntry(cacheKey, cacheMeta, target, botBadges);
                 }
                 botBadges = cachedInventory.badges;
-                target.InventorySnapshotTime = cachedInventory.snapshotTime;
-                setTargetInventoryStatus(target, cachedInventory.stale ? "stale badge counts (refresh queued)" : "cached badge counts");
                 markProgressComplete('botBadges');
                 finalizeTargetInventoryAfterLoad(userindex);
                 return;
@@ -3146,10 +2379,7 @@
         finalizeTargetInventoryAfterLoad(userindex);
     }
 
-    function getBadges(page, generation = scanGeneration) {
-        if (stop || generation !== scanGeneration) {
-            return;
-        }
+    function getBadges(page) {
         const activeScanFilters = globalSettings.scanFilters.filter(x => x.active);
         if (globalSettings.useScanFilters && activeScanFilters.length) {
             for (let filter of activeScanFilters) {
@@ -3168,7 +2398,7 @@
             updateProgress('scanPages');
             setTimeout(
                 function () {
-                    GetOwnCards(0, generation);
+                    GetOwnCards(0);
                 },
                 globalSettings.weblimiter + globalSettings.errorLimiter * errors,
             );
@@ -3178,11 +2408,7 @@
         let xhr = new XMLHttpRequest();
         xhr.open("GET", url, true);
         xhr.responseType = "document";
-        xhr.timeout = 30000;
         xhr.onload = function () {
-            if (generation !== scanGeneration) {
-                return;
-            }
             if (stop) {
                 stopEventCleanup('User interrupt');
                 return;
@@ -3229,12 +2455,12 @@
             } else {
                 errors++;
             }
-            if ((status < 400 || status === 408 || status === 429 || status >= 500) && errors <= boundedRetryLimit(globalSettings.maxErrors)) {
+            if ((status < 400 || status >= 500) && errors <= globalSettings.maxErrors) {
                 if (page <= maxPages) {
                     setTimeout(
                         (function (page) {
                             return function () {
-                                getBadges(page, generation);
+                                getBadges(page);
                             };
                         })(page),
                         globalSettings.weblimiter + globalSettings.errorLimiter * errors,
@@ -3246,44 +2472,38 @@
                     } else {
                         setTimeout(
                             function () {
-                                GetOwnCards(0, generation);
+                                GetOwnCards(0);
                             },
                             globalSettings.weblimiter + globalSettings.errorLimiter * errors,
                         );
                     }
                 }
             } else {
-                showScanDiagnostic(requestFailure(url, "Your badge pages", {status, event: "load"}, errors));
-                stopEventCleanup('Your badge pages unavailable; scan stopped');
+                stopEventCleanup('error fetching badges page: request error');
                 return;
             }
         };
-        xhr.onerror = function (event) {
-            if (generation !== scanGeneration) {
-                return;
-            }
+        xhr.onerror = function () {
             if (stop) {
                 stopEventCleanup('User interrupt');
                 return;
             }
             errors++;
-            if (errors <= boundedRetryLimit(globalSettings.maxErrors)) {
+            if (errors <= globalSettings.maxErrors) {
                 setTimeout(
                     (function (page) {
                         return function () {
-                            getBadges(page, generation);
+                            getBadges(page);
                         };
                     })(page),
                     globalSettings.weblimiter + globalSettings.errorLimiter * errors,
                 );
             } else {
-                showScanDiagnostic(requestFailure(url, "Your badge pages", {status: xhr.status, event: event === "timeout" ? "timeout" : "network"}, errors));
-                stopEventCleanup('Your badge pages unavailable; scan stopped');
+                stopEventCleanup('Max error rate reached');
                 return;
             }
         };
-        xhr.ontimeout = () => xhr.onerror("timeout");
-        sendPacedSteamRequest(xhr, generation, () => {});
+        xhr.send();
     }
 
     function addScanFilterEventHandler() {
@@ -3409,20 +2629,12 @@
     function stopButtonEvent() {
         document.querySelector('#asf_stm_stop_div').hidden = true;
         stop = true;
-        scanGeneration++;
-        activeScanRequests.forEach(xhr => xhr.abort());
-        activeScanRequests.clear();
-        inventoryRefreshQueue.length = 0;
-        Object.values(progressRadials).forEach(x => {if (x.textElement) x.textElement.textContent = '❌'});
-        stopEventCleanup("User interrupt; discovery/results may be partial");
+        Object.values(progressRadials).forEach(x => {x.textElement.textContent = '❌'});
     }
 
     function stopEventCleanup(reason) {
         // Hide throbber
-        const throbber = document.querySelector('#throbber');
-        if (throbber) {
-            throbber.style.display = 'none';
-        }
+        document.querySelector('#throbber').style.display = 'none';
         enableButton();
         document.querySelector('#asf_stm_stop_div').hidden = true;
         if (cacheBypassActive) {
@@ -3434,75 +2646,39 @@
             cacheStats.mode = isInventoryCacheEnabled() ? "enabled" : "disabled";
             updateCacheStatus();
         }
-        console.log(`Stopping: ${sanitizeDiagnostic(reason)}`);
-        showDiscoveryProgress(reason);
+        console.log(`Stopping: ${reason}`);
     }
 
-    function buttonPressedEvent(targetsReady = false) {
-        if (targetsReady !== true) {
-            scanGeneration++;
-            stop = false;
-            groupDiscoveryReports = [];
-            inventoryScanStatuses = {};
-            inventoryRefreshQueue.length = 0;
-            errors = 0;
-            scanStatus = {progress: "", warning: "", diagnostic: ""};
-            resetAdaptiveRequestDelay();
-            renderScanStatus();
-        }
+    function buttonPressedEvent() {
+        scanGeneration++;
         if (globalSettings.preventClose) {
             window.addEventListener('beforeunload', function (e) {
                 e.preventDefault();
             });
         }
         const enabledSources = getEnabledSources();
-        if (!enabledSources.scanBots && !enabledSources.scanFriends && !enabledSources.scanGroups && whitelist.length === 0) {
+        if (!enabledSources.scanBots && !enabledSources.scanFriends) {
             enableButton();
             return;
         }
         cacheBypassActive = globalSettings.forceFreshScan === true;
         resetCacheStats();
-        if (targetsReady === true || isCacheValid(bots, enabledSources)) {
-            scanStatus.warning = sourceWarning(bots);
-            renderScanStatus();
-        }
-        if (targetsReady !== true && (cacheBypassActive || !isCacheValid(bots, enabledSources) || bots.Result === undefined || bots.Success !== true)) {
-            disableButton();
-            document.querySelector('#asf_stm_stop_div').hidden = false;
+        if (cacheBypassActive || !isCacheValid(bots, enabledSources) || bots.Result === undefined || bots.Success !== true) {
             fetchBots();
             return;
         }
         if (bots.Result.length === 0) {
-            groupDiscoveryReports = bots.groupReports || [];
-            stopEventCleanup(bots.partialFailure ? "No eligible targets; discovery was partial" : "No eligible targets");
+            enableButton();
             return;
         }
         bots.Result.sort(botSorter);
-        bots.Result.forEach(target => {
-            delete target.badgesSnapshot;
-            delete target.itemsToSend;
-            delete target.itemsToReceive;
-            delete target.CountedInventoryStatus;
-            delete target.InventorySnapshotTime;
-            target.InventoryStatus = "not scanned";
-        });
-        groupDiscoveryReports = bots.groupReports || [];
         disableButton();
         let mainContentDiv = document.getElementsByClassName("maincontent")[0];
         mainContentDiv.textContent = "";
         mainContentDiv.style.width = "90%";
-        const partialSourceWarning = "";
+        const partialSourceWarning = bots.partialFailure ? `<div style="color:#e5c07b;text-align:center;margin-bottom:0.75rem;">Warning: one or more enabled sources could not be fetched; results may be partial.</div>` : "";
         mainContentDiv.innerHTML = `<div class="profile_badges_header"><div id="throbber"><div class="LoadingWrapper"><div class="LoadingThrobber"><div class="Bar Bar1"></div><div class="Bar Bar2"></div><div class="Bar Bar3"></div></div></div></div><div style="display: flex;flex-direction: column;align-items: center;">${partialSourceWarning}<div class="progress-container"><div class="progress-step"><div id="scan-pages-radial" class="radial-progress" style="--progress: 0deg;"><div id="scan-pages-text" class="progress-inner">?</div></div><span id="scan-pages-label" class="label">${globalSettings.useScanFilters && globalSettings.scanFilters.filter(x => x.active).length ? 'Filters' : 'Badge Pages'}</span></div><div class="progress-step"><div id="scan-badges-radial" class="radial-progress" style="--progress: 0deg;"><div id="scan-badges-text" class="progress-inner">?</div></div><span id="scan-badges-label" class="label">Badges</span></div><div class="progress-step"><div id="scan-bots-radial" class="radial-progress" style="--progress: 0deg;"><div id="scan-bots-text" class="progress-inner">?</div></div><span id="scan-bots-label" class="label">Targets</span></div><div class="progress-step"><div id="bots-badges-radial" class="radial-progress" style="--progress: 0deg;"><div id="bots-badges-text" class="progress-inner">?</div></div><span id="bots-badges-label" class="label">Target Badges</span></div></div></div></div><div id="asf_stm_results_summary" style="margin:1rem 0 0.75rem;text-align:center;color:#c7d5e0;"></div><div id="asf_stm_results_controls" style="display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;justify-content:center;margin-bottom:1rem;"><span style="color:#8F98A0;">Show:</span><a href="#" data-result-filter="all" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">All</a><a href="#" data-result-filter="asf" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">ASF only</a><a href="#" data-result-filter="friends" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">Friends only</a><a href="#" data-result-filter="shared" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">Shared</a><span style="color:#8F98A0;margin-left:0.5rem;">Order:</span><a href="#" data-result-grouping="combined" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">Combined</a><a href="#" data-result-grouping="source" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">By source</a><span style="color:#8F98A0;margin-left:0.5rem;">Trades:</span><a href="#" data-trade-action="refresh-completed" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">Refresh completed</a><a href="#" data-trade-action="clear-tracked" class="commentthread_pagelinks" style="padding:0.2rem 0.6rem;border:1px solid #4a83fd55;border-radius:999px;">Clear tracked</a><span data-asf-stm-trade-status style="color:#8F98A0;margin-left:0.5rem;"></span></div><div id="asf_stm_results_body" style="display:flex;flex-direction:column;gap:0.75rem;"></div><div id="asf_stm_filters" style="position: fixed; z-index: 1000; right: 5px; bottom: 45px; transition-duration: 500ms; transition-timing-function: ease; margin-right: -50%; padding: 5px; max-width: 40%; display: inline-block; border-radius: 2px; background:rgba(23,26,33,0.8); color: #67c1f5;"><div style="white-space: nowrap;">Select:<a id="asf_stm_filter_all" class="commentthread_pagelinks">all</a><a id="asf_stm_filter_none" class="commentthread_pagelinks">none</a><a id="asf_stm_filter_invert" class="commentthread_pagelinks">invert</a></div><hr /><div id="asf_stm_filters_body"><span id="asf_stm_placeholder" style="margin-right: 15px;">No matches to filter</span></div></div><div style="position: fixed;z-index: 1000;right: 5px;bottom: 5px;" id="asf_stm_filters_button_div"><a id="asf_stm_filters_button" class="btnv6_blue_hoverfade btn_medium"><span>Filters</span></a></div>`;
-        renderScanStatus();
         document.getElementById("asf_stm_filters").style.background = sanitizeFilterBackgroundColor(globalSettings.filterBackgroundColor);
-        if (globalSettings.scanGroups) {
-            const groupControl = document.createElement("a");
-            groupControl.href = "#";
-            groupControl.dataset.resultFilter = "groups";
-            groupControl.className = "commentthread_pagelinks";
-            groupControl.textContent = "Groups (including shared)";
-            document.getElementById("asf_stm_results_controls").prepend(groupControl);
-        }
         document.getElementById("asf_stm_filters_body").addEventListener("change", filterEventHandler);
         document.getElementById("asf_stm_filter_all").addEventListener("click", filterSwitchesHandler);
         document.getElementById("asf_stm_filter_none").addEventListener("click", filterSwitchesHandler);
@@ -3613,51 +2789,92 @@
     }
 
     function fetchBots() {
-        const generation = scanGeneration;
         const enabledSources = getEnabledSources();
+        const requestFunc = getRequestFunc();
 
-        async function fetchAsfTargets() {
-            const body = await requestSource("https://asf.justarchi.net/Api/Listing/Bots", "ASF discovery", generation);
-            assertCurrentScan(generation);
-            let re = /("SteamID":)(\d+)/g;
-            let parsed;
-            try {
-                parsed = JSON.parse(String(body).replace(re, '$1"$2"'));
-            } catch (_) {
-                throw new Error("ASF returned an invalid listing response (HTTP 200)");
-            }
-            if (!parsed.Success || !Array.isArray(parsed.Result)) {
-                throw new Error("ASF backend did not return a successful listing (HTTP 200)");
-            }
-            return parsed.Result.filter(bot => (bot.MatchableTypes ?? []).includes(5)).map(normalizeBot);
+        function fetchAsfTargets() {
+            return new Promise((resolve, reject) => {
+                requestFunc({
+                    method: "GET",
+                    url: "https://asf.justarchi.net/Api/Listing/Bots",
+                    headers: {
+                        "User-Agent": "ASF-STM/" + GM_info.version,
+                    },
+                    onload: function (response) {
+                        if (response.status !== 200) {
+                            reject(new Error(`Can't fetch ASF bots: ${response.status}`));
+                            return;
+                        }
+                        try {
+                            let re = /("SteamID":)(\d+)/g;
+                            let fixedJson = (response.responseText ?? response.response).replace(re, '$1"$2"');
+                            let parsed = JSON.parse(fixedJson);
+                            if (!parsed.Success) {
+                                reject(new Error(parsed.Message || "ASF backend did not return success"));
+                                return;
+                            }
+                            resolve(parsed.Result.filter(bot => (bot.MatchableTypes ?? []).includes(5)).map(normalizeBot));
+                        } catch (e) {
+                            reject(e);
+                        }
+                    },
+                    onerror: function (response) {
+                        reject(response);
+                    },
+                    onabort: function (response) {
+                        reject(response);
+                    },
+                    ontimeout: function (response) {
+                        reject(response);
+                    },
+                });
+            });
         }
 
-        async function fetchFriendTargets() {
-            const body = await requestSource("https://steamcommunity.com/actions/PlayerList/?type=friends", "Friends discovery", generation);
-            assertCurrentScan(generation);
-            const parser = new DOMParser();
-            const friendListDocument = parser.parseFromString(body, 'text/html');
-            // A login/private/error page must not be cached as a successful empty friend list.
-            if (!friendListDocument.querySelector("div.friendBlock, #search_results, #friends_list, .friends_content") ||
-                friendListDocument.querySelector("#loginForm, .profile_private_info, .error_ctn")) {
-                throw new Error("Friends list unavailable or unexpected page (HTTP 200); check Steam sign-in/privacy");
-            }
-            let accountIDs = Array.from(friendListDocument.querySelectorAll('div.friendBlock'), x => x.dataset.miniprofile);
-            let profile = Array.from(friendListDocument.querySelectorAll('a.friendBlockLinkOverlay'), x => x.href.replace(/https:\/\/steamcommunity.com\//g, ''));
-            let avatarHash = Array.from(friendListDocument.querySelectorAll('div.friendBlock img'), img => img.src).map(str => str.match(/[a-z0-9]{40}/)?.[0] ?? null);
-            let nickname = Array.from(friendListDocument.querySelectorAll('div.friendBlockContent'), x => x.childNodes[0]?.data?.trim() ?? 'Unknown friend');
-            return profile.map((profileLink, index) => normalizeFriend(profileLink, avatarHash[index], nickname[index], accountIDs[index]));
+        function fetchFriendTargets() {
+            return new Promise((resolve, reject) => {
+                requestFunc({
+                    method: "GET",
+                    url: "https://steamcommunity.com/actions/PlayerList/?type=friends",
+                    headers: {
+                        "User-Agent": "ASF-STM/" + GM_info.version,
+                    },
+                    onload: function (response) {
+                        if (response.status !== 200) {
+                            reject(new Error(`Can't fetch friends: ${response.status}`));
+                            return;
+                        }
+                        try {
+                            const parser = new DOMParser();
+                            const friendListDocument = parser.parseFromString(response.responseText ?? response.response, 'text/html');
+                            let accountIDs = Array.from(friendListDocument.querySelectorAll('div.friendBlock'), x => x.dataset.miniprofile);
+                            let profile = Array.from(friendListDocument.querySelectorAll('a.friendBlockLinkOverlay'), x => x.href.replace(/https:\/\/steamcommunity.com\//g, ''));
+                            let avatarHash = Array.from(friendListDocument.querySelectorAll('div.friendBlock img'), img => img.src).map(str => str.match(/[a-z0-9]{40}/)?.[0] ?? null);
+                            let nickname = Array.from(friendListDocument.querySelectorAll('div.friendBlockContent'), x => x.childNodes[0]?.data?.trim() ?? 'Unknown friend');
+                            resolve(profile.map((profileLink, index) => normalizeFriend(profileLink, avatarHash[index], nickname[index], accountIDs[index])));
+                        } catch (e) {
+                            reject(e);
+                        }
+                    },
+                    onerror: function (response) {
+                        reject(response);
+                    },
+                    onabort: function (response) {
+                        reject(response);
+                    },
+                    ontimeout: function (response) {
+                        reject(response);
+                    },
+                });
+            });
         }
 
         let fetchers = [];
         if (enabledSources.scanBots) {
-            fetchers.push({name: "ASF", promise: fetchAsfTargets()});
+            fetchers.push(fetchAsfTargets());
         }
         if (enabledSources.scanFriends) {
-            fetchers.push({name: "Friends", promise: fetchFriendTargets()});
-        }
-        if (enabledSources.scanGroups) {
-            fetchers.push({name: "Groups", promise: discoverGroupTargets(generation)});
+            fetchers.push(fetchFriendTargets());
         }
         if (fetchers.length === 0 && whitelist.length === 0) {
             enableButton();
@@ -3665,62 +2882,27 @@
             return;
         }
 
-        showDiscoveryProgress("Discovering enabled scan sources…");
-        Promise.allSettled(fetchers.map(fetcher => fetcher.promise)).then((results) => {
-            if (stop || generation !== scanGeneration) {
+        Promise.allSettled(fetchers).then((results) => {
+            const successfulResults = results.filter(result => result.status === "fulfilled").map(result => result.value);
+            if (successfulResults.length === 0) {
+                disableButton();
+                document.getElementById("asf_stm_button_div").setAttribute("title", "Can't fetch scan targets");
                 return;
             }
-            const successfulResults = results.filter(result => result.status === "fulfilled").map(result => result.value);
-            const successfulSource = results.some((result, index) => result.status === "fulfilled" &&
-                (fetchers[index].name !== "Groups" || result.value.length > 0 ||
-                    groupDiscoveryReports.some(report => report.status === "complete")));
-            const sourceReports = results.map((result, index) => ({
-                name: fetchers[index].name,
-                status: result.status !== "fulfilled" ? "failed" :
-                    fetchers[index].name === "Groups" && groupDiscoveryReports.some(report => report.status !== "complete") ?
-                        groupDiscoveryReports.every(report => report.status === "complete" || report.kind === "limit") ? "limited" : "partial" : "complete",
-                detail: result.status === "fulfilled" ? "" : sanitizeDiagnostic(result.reason?.message || "Request failed; no HTTP status available"),
-                diagnostic: result.reason?.path ? {
-                    stage: result.reason.stage, path: result.reason.path, status: result.reason.status,
-                    event: result.reason.event, attempts: result.reason.attempts,
-                } : undefined,
-            }));
-            const partialFailure = results.some(result => result.status !== "fulfilled") || groupDiscoveryReports.some(report => report.status !== "complete");
+            const partialFailure = results.some(result => result.status !== "fulfilled");
             bots = {
-                Success: successfulSource || whitelist.length > 0,
-                profileLink: myProfileLink,
+                Success: true,
                 cacheTime: Date.now(),
                 partialFailure: partialFailure,
-                sourceReports,
-                groupReports: deepClone(groupDiscoveryReports),
                 sourceState: {...enabledSources, whitelist: whitelist.join(",")},
                 Result: mergeTargets(successfulResults.concat([whitelist.map(normalizeWhitelistSteamID)])),
             };
-            bots.Result.forEach(target => {
-                const suppliedUrl = globalSettings.tradeUrls.find(value => parseTradeUrl(value).partner === target.TradePartner);
-                if (suppliedUrl) {
-                    target.TradeToken = parseTradeUrl(suppliedUrl, target.TradePartner).token;
-                    target.TradeAccess = "token supplied (not verified)";
-                } else if (target.SourceTypes.includes("friends")) {
-                    target.TradeAccess = "friend (Steam checks eligibility)";
-                } else if (target.SourceTypes.includes("asf") && target.TradeToken) {
-                    target.TradeAccess = "ASF token (Steam checks eligibility)";
-                } else {
-                    target.TradeAccess = "unknown";
-                }
-            });
             try {
                 localStorage.setItem(`${STORAGE_PREFIX}.BotCache`, JSON.stringify(bots));
             } catch (error) {
                 console.warn("Failed to cache unified scan targets", error);
             }
-            scanStatus.warning = sourceWarning(bots);
-            renderScanStatus();
-            if (!bots.Success) {
-                stopEventCleanup("Failed to fetch enabled sources; no targets scanned");
-                return;
-            }
-            buttonPressedEvent(true);
+            buttonPressedEvent();
         });
     }
     //Main
@@ -3795,10 +2977,10 @@
 
         // add our styles to the document's style sheet
         if (typeof GM_addStyle !== "undefined") {
-            GM_addStyle(css + configCss);
+            GM_addStyle(css);
         } else {
             const node = document.createElement("style");
-            node.appendChild(document.createTextNode(css + configCss));
+            node.appendChild(document.createTextNode(css));
             const heads = document.getElementsByTagName("head");
             if (heads.length > 0) {
                 heads[0].appendChild(node);
@@ -3846,49 +3028,19 @@
             let failLater = false;
             let cardTypes = [[], []];
             let trackedAssetIds = [[], []];
-            if (document.querySelectorAll("#your_slots .has_item, #their_slots .has_item").length > 0) {
-                unsafeWindow.ShowAlertDialog("Offer already contains items", "Start with an empty offer before preparing this match. Nothing was added.");
-                throw new Error("Offer not empty");
-            }
-            if (!isUserSteamID64(g_v.Users[1]?.strSteamId) || getPartner(g_v.Users[1].strSteamId) !== g_v.tradeTrackingContext.partner) {
-                unsafeWindow.ShowAlertDialog("Partner mismatch", "The loaded inventory owner does not match the requested Steam partner. Nothing was added.");
-                throw new Error("Loaded partner mismatch");
-            }
-            const selections = g_v.Cards.map((requestedCards, i) => {
-                const inventory = g_v.Users[i].rgContexts[753][6].inventory;
-                inventory.BuildInventoryDisplayElements();
-                const available = new Map();
-                const seenIds = new Set();
-                Object.values(inventory.rgInventory || {}).forEach(item => {
-                    if (!isTradableItem(item) || !isNormalCard(item) || (item.amount !== undefined && Number(item.amount) !== 1) ||
-                        !/^\d+$/.test(String(item.id)) || seenIds.has(String(item.id)) || !item.element) {
-                        return;
-                    }
-                    seenIds.add(String(item.id));
-                    if (!available.has(item.market_hash_name)) {
-                        available.set(item.market_hash_name, []);
-                    }
-                    available.get(item.market_hash_name).push(item);
-                });
-                const needed = new Map();
-                requestedCards.forEach(hash => needed.set(hash, (needed.get(hash) || 0) + 1));
-                if (Array.from(needed).some(([hash, count]) => (available.get(hash)?.length || 0) < count)) {
-                    unsafeWindow.ShowAlertDialog("Tradable cards missing", "Live inventories do not contain enough tradable normal cards. Refresh your scan. Nothing was added.");
-                    throw new Error("Insufficient live tradable cards");
-                }
-                return available;
-            });
             g_v.Cards.forEach(function (requestedCards, i) {
                 tmpCards = {};
-                inv = Array.from(selections[i].values()).flat();
-                inv.forEach(function (item) {
+                inv = g_v.Users[i].rgContexts[753][6].inventory;
+                inv.BuildInventoryDisplayElements();
+                inv = inv.rgInventory;
+                Object.keys(inv).forEach(function (item) {
                     // add all matching cards to temporary dict
-                    index = requestedCards.findIndex((elem) => elem === item.market_hash_name);
+                    index = requestedCards.findIndex((elem) => elem == inv[item].market_hash_name);
                     if (index > -1) {
                         if (tmpCards[requestedCards[index]] === undefined) {
                             tmpCards[requestedCards[index]] = [];
                         }
-                        tmpCards[requestedCards[index]].push({ type: item.type, element: item.element, id: item.id });
+                        tmpCards[requestedCards[index]].push({ type: inv[item].type, element: inv[item].element, id: inv[item].id });
                     }
                 });
                 if (g_s.order === "SORT") {
@@ -3916,9 +3068,7 @@
                 });
             });
 
-            if (failLater || document.querySelectorAll("#your_slots .has_item").length !== document.querySelectorAll("#their_slots .has_item").length ||
-                document.querySelectorAll("#your_slots .has_item").length !== g_v.Cards[0].length ||
-                document.querySelectorAll("#their_slots .has_item").length !== g_v.Cards[1].length) {
+            if (failLater || document.querySelectorAll("#your_slots .has_item").length !== document.querySelectorAll("#their_slots .has_item").length) {
                 unsafeWindow.ShowAlertDialog("Items missing", "Some items are missing and were not added to trade offer. Script aborting.");
                 throw "Cards missing";
             }
@@ -4000,7 +3150,7 @@
             script.appendChild(document.createTextNode(functionToInject));
             document.body.appendChild(script);
             // send trade offer
-            if (g_s.autoSend && !g_v.manualReview) {
+            if (g_s.autoSend) {
                 unsafeWindow.ToggleReady(true);
                 unsafeWindow.CTradeOfferStateManager.ConfirmTradeOffer();
             }
@@ -4016,11 +3166,6 @@
 
         function checkContexts(g_s, g_v) {
             "use strict";
-            if (Date.now() - g_v.inventoryLoadStartedAt > 60000) {
-                restoreCookie(g_v.oldCookie);
-                unsafeWindow.ShowAlertDialog("Inventory unavailable", "Steam inventories did not finish loading within 60 seconds. No offer was sent.");
-                return;
-            }
             let ready = 0;
             // check if Steam loaded everything needed
             g_v.Users.forEach(function (user) {
@@ -4072,10 +3217,6 @@
                 let params = LoadParams();
 
                 let vars = getUrlVars();
-                if (!/^[1-9]\d{0,9}$/.test(vars.partner || "") || Number(vars.partner) > 4294967295 ||
-                    (vars.token !== undefined && !/^[A-Za-z0-9_-]{8}$/.test(vars.token))) {
-                    throw new Error("Invalid trade partner/token");
-                }
 
                 if (vars.match === undefined) {
                     throw new Error("missing url parameter");
@@ -4133,11 +3274,7 @@
                 document.cookie = "strTradeLastInventoryContext=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/tradeoffer/";
 
                 let Users = [unsafeWindow.UserYou, unsafeWindow.UserThem];
-                let global_vars = {
-                    Users: Users, oldCookie: oldCookie, Cards: Cards, tradeTrackingContext: tradeTrackingContext, tradeOfferMessage: tradeOfferMessage,
-                    inventoryLoadStartedAt: Date.now(),
-                    manualReview: vars.groupmatch === "1" || params.targetSafety?.[vars.partner]?.manualReview === true,
-                };
+                let global_vars = { Users: Users, oldCookie: oldCookie, Cards: Cards, tradeTrackingContext: tradeTrackingContext, tradeOfferMessage: tradeOfferMessage };
 
                 window.setTimeout(checkContexts, 500, globalSettings, global_vars);
             }
